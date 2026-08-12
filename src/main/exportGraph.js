@@ -450,7 +450,7 @@ function buildAssFile(textClips, W, H) {
     lines.push(`Dialogue: 0,${assTimestamp(clip.startTime)},${assTimestamp(clip.startTime + dur)},${styleNames[i]},,0,0,0,,${override}${escAssText(t.content)}`);
   });
 
-  const assPath = path.join(os.tmpdir(), `opencut-export-${Date.now()}-${Math.random().toString(36).slice(2)}.ass`);
+  const assPath = path.join(os.tmpdir(), `openclips-export-${Date.now()}-${Math.random().toString(36).slice(2)}.ass`);
   fs.writeFileSync(assPath, lines.join('\n'), 'utf-8');
   return assPath;
 }

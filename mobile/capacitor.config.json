@@ -1,0 +1,8 @@
+{
+  "appId": "com.openclips.app",
+  "appName": "OpenClips",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false
+  }
+}

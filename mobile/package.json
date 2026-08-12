@@ -1,0 +1,11 @@
+{
+  "name": "openclips-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenClips Android companion app (Capacitor)",
+  "dependencies": {
+    "@capacitor/android": "^6.2.1",
+    "@capacitor/cli": "^6.2.1",
+    "@capacitor/core": "^6.2.1"
+  }
+}

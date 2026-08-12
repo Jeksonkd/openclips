@@ -65,7 +65,7 @@ function renderAssetList() {
     item.appendChild(name);
 
     item.addEventListener('dragstart', (e) => {
-      e.dataTransfer.setData('application/x-opencut-media', media.id);
+      e.dataTransfer.setData('application/x-openclips-media', media.id);
       e.dataTransfer.effectAllowed = 'copy';
     });
 

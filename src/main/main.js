@@ -77,7 +77,7 @@ ipcMain.handle('dialog:saveProject', async () => {
   const res = await dialog.showSaveDialog(mainWindow, {
     title: 'Save Project',
     defaultPath: 'project.ccproj.json',
-    filters: [{ name: 'OpenCut Project', extensions: ['json'] }],
+    filters: [{ name: 'OpenClips Project', extensions: ['json'] }],
   });
   if (res.canceled) return null;
   return res.filePath;
@@ -87,7 +87,7 @@ ipcMain.handle('dialog:openProject', async () => {
   const res = await dialog.showOpenDialog(mainWindow, {
     title: 'Open Project',
     properties: ['openFile'],
-    filters: [{ name: 'OpenCut Project', extensions: ['json'] }],
+    filters: [{ name: 'OpenClips Project', extensions: ['json'] }],
   });
   if (res.canceled) return null;
   return res.filePaths[0];
@@ -121,7 +121,7 @@ ipcMain.handle('media:probe', async (evt, filePath) => {
 });
 
 ipcMain.handle('media:thumbnail', async (evt, filePath, atSeconds) => {
-  const tmpDir = path.join(app.getPath('temp'), 'opencut-engine-thumbs');
+  const tmpDir = path.join(app.getPath('temp'), 'openclips-engine-thumbs');
   fs.mkdirSync(tmpDir, { recursive: true });
   const outPath = path.join(tmpDir, `${path.basename(filePath)}.${Math.round((atSeconds || 0) * 1000)}.jpg`);
   await generateThumbnail(filePath, atSeconds || 0, outPath);

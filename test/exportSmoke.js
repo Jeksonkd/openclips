@@ -76,7 +76,7 @@ adjustClip.adjustments.hsl.cyan = [10, 30, 0];
 const textClip = clip({
   kind: 'text', mediaId: null, startTime: 0.5, inPoint: 0, outPoint: 5.5,
   transform: { positionX: 0, positionY: 130, scale: 1, rotation: 0, opacity: 1, blendMode: 'normal' },
-  text: { content: 'OpenCut Demo', fontFamily: 'Sans', fontSize: 40, color: '#ffdd33', align: 'center', bgEnabled: true, bgColor: '#1a1a4d', bgOpacity: 0.7 },
+  text: { content: 'OpenClips Demo', fontFamily: 'Sans', fontSize: 40, color: '#ffdd33', align: 'center', bgEnabled: true, bgColor: '#1a1a4d', bgOpacity: 0.7 },
 });
 
 const project = {

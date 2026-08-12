@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">OpenClips</string>
+    <string name="title_activity_main">OpenClips</string>
+    <string name="package_name">com.openclips.app</string>
+    <string name="custom_url_scheme">com.openclips.app</string>
+</resources>

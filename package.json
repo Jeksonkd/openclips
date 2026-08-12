@@ -1,9 +1,9 @@
 {
-  "name": "opencut-engine",
+  "name": "openclips-engine",
   "version": "0.1.0",
-  "description": "Local desktop NLE engine (OpenCut): multi-track timeline, WebGL color grading, keyframes, ffmpeg export.",
+  "description": "Local desktop NLE engine (OpenClips): multi-track timeline, WebGL color grading, keyframes, ffmpeg export.",
   "main": "src/main/main.js",
-  "author": "opencut-engine",
+  "author": "openclips",
   "license": "MIT",
   "private": true,
   "scripts": {
@@ -20,8 +20,8 @@
     "electron-builder": "^25.1.8"
   },
   "build": {
-    "appId": "com.local.opencutengine",
-    "productName": "OpenCut",
+    "appId": "com.local.openclipsengine",
+    "productName": "OpenClips",
     "asar": true,
     "files": [
       "src/**/*",

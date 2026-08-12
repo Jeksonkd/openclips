@@ -631,7 +631,7 @@ function renderTracks() {
     lane.addEventListener('drop', (e) => {
       e.preventDefault();
       lane.classList.remove('drop-hover');
-      const mediaId = e.dataTransfer.getData('application/x-opencut-media');
+      const mediaId = e.dataTransfer.getData('application/x-openclips-media');
       if (!mediaId) return;
       const draggedMedia = project.media[mediaId];
       if (!draggedMedia) return;
