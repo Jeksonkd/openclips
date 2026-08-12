@@ -19,10 +19,10 @@
     <div id="preview-wrap">
       <video id="preview-video" playsinline muted></video>
       <div id="no-clip-hint">Add a clip to begin</div>
-      <button id="btn-playpause" class="play-overlay">▶</button>
     </div>
 
     <div id="scrub-row">
+      <button id="btn-playpause" class="play-btn">▶</button>
       <span id="time-readout">00:00 / 00:00</span>
     </div>
 
@@ -44,6 +44,22 @@
 
 <div id="sheet-backdrop" class="backdrop hidden"></div>
 
+<div id="add-sheet" class="sheet hidden">
+  <div class="sheet-handle"></div>
+  <div class="sheet-title">Add</div>
+  <div class="sheet-options">
+    <button class="sheet-option" data-add="media">
+      <span class="sheet-option-icon">🎬</span><span>Media</span>
+    </button>
+    <button class="sheet-option" data-add="text">
+      <span class="sheet-option-icon">T</span><span>Text</span>
+    </button>
+    <button class="sheet-option" data-add="effect">
+      <span class="sheet-option-icon">✨</span><span>Effect</span>
+    </button>
+  </div>
+</div>
+
 <div id="transition-sheet" class="sheet hidden">
   <div class="sheet-handle"></div>
   <div class="sheet-title">Transition</div>
@@ -55,6 +71,33 @@
       <span class="sheet-option-icon">◐</span><span>Fade</span>
     </button>
   </div>
+</div>
+
+<div id="effect-sheet" class="sheet hidden">
+  <div class="sheet-handle"></div>
+  <div class="sheet-title">Effect</div>
+  <div class="sheet-options wrap" id="effect-options"></div>
+</div>
+
+<div id="text-sheet" class="sheet hidden">
+  <div class="sheet-handle"></div>
+  <div class="sheet-title">Add Text</div>
+  <textarea id="text-input" class="text-input" placeholder="Type something…" rows="2"></textarea>
+  <div class="field-row">
+    <label>Color</label>
+    <input type="color" id="text-color-input" value="#ffffff" />
+  </div>
+  <button id="text-sheet-add" class="sheet-primary-btn">Add</button>
+</div>
+
+<div id="props-sheet" class="sheet props-sheet hidden">
+  <div class="sheet-handle"></div>
+  <div class="props-tabs" id="props-tabs">
+    <button class="props-tab active" data-tab="adjust">Adjust</button>
+    <button class="props-tab" data-tab="effect">Effect</button>
+    <button class="props-tab" data-tab="mask">Mask &amp; Blend</button>
+  </div>
+  <div class="props-body" id="props-body"></div>
 </div>
 
 <div id="export-modal" class="modal hidden">

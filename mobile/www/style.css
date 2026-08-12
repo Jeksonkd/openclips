@@ -18,14 +18,19 @@ html, body {
   background: var(--bg-0);
   color: var(--text-0);
   font: 14px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif;
-  overflow: hidden;
 }
-#app { height: 100vh; height: 100dvh; display: flex; flex-direction: column; }
+/* #app is allowed to scroll vertically as a safety net - on real devices,
+   safe-area insets/system bars can make 100dvh not quite match the usable
+   viewport, and with everything locked to overflow:hidden there was no way
+   to reach content that ended up just off-screen (reported: "can't scroll
+   down", and almost certainly why the bottom toolbar's Add button became
+   unreliable too - it was being clipped, not actually broken). */
+#app { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; overflow-y: auto; }
 .screen { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .hidden { display: none !important; }
 
 /* Home screen */
-#home-screen { align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; }
+#home-screen { align-items: center; justify-content: center; gap: 10px; padding: 24px calc(24px + env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) calc(24px + env(safe-area-inset-left)); text-align: center; }
 .home-brand { font-size: 34px; font-weight: 700; letter-spacing: 0.5px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .home-tagline { color: var(--text-1); margin-bottom: 28px; }
 .fab-import {
@@ -38,7 +43,7 @@ html, body {
 #preview-wrap {
   position: relative;
   flex: 1;
-  min-height: 0;
+  min-height: 160px;
   background: #000;
   display: flex;
   align-items: center;
@@ -47,15 +52,13 @@ html, body {
 }
 #preview-video { max-width: 100%; max-height: 100%; background: #000; }
 #no-clip-hint { position: absolute; color: var(--text-1); font-size: 14px; pointer-events: none; }
-.play-overlay {
-  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-  width: 60px; height: 60px; border-radius: 50%; background: rgba(0,0,0,.4);
-  color: #fff; font-size: 22px; border: 1px solid rgba(255,255,255,.3);
-  display: flex; align-items: center; justify-content: center;
-}
-.play-overlay.playing { opacity: 0; pointer-events: none; transition: opacity .2s; }
 
-#scrub-row { padding: 6px 14px; text-align: center; flex-shrink: 0; }
+#scrub-row { display: flex; align-items: center; gap: 10px; padding: 8px 14px; flex-shrink: 0; }
+.play-btn {
+  width: 34px; height: 34px; border-radius: 50%; background: var(--bg-3); border: 1px solid var(--line);
+  color: var(--text-0); font-size: 14px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.play-btn.playing { color: var(--accent); border-color: var(--accent); }
 #time-readout { color: var(--text-1); font-variant-numeric: tabular-nums; font-size: 12px; }
 
 /* Timeline */
@@ -94,6 +97,8 @@ html, body {
   background-position: center;
   margin-right: 3px;
 }
+.tl-clip.text-clip { background: linear-gradient(135deg, #6b4f8c, #8a5fe0); display: flex; align-items: center; justify-content: center; padding: 4px; }
+.tl-clip.text-clip .tl-clip-text-preview { color: #fff; font-size: 10px; text-align: center; overflow: hidden; max-height: 100%; }
 .tl-clip.selected { border-color: var(--accent); }
 .tl-clip .tl-clip-name {
   position: absolute; left: 4px; bottom: 2px; font-size: 9px; color: #fff;
@@ -108,6 +113,10 @@ html, body {
 .tl-clip .tl-handle::after { content: ""; width: 3px; height: 22px; background: #fff; border-radius: 2px; }
 .tl-clip .tl-handle.left { left: 0; border-radius: 8px 0 0 8px; }
 .tl-clip .tl-handle.right { right: 0; border-radius: 0 8px 8px 0; }
+.tl-clip-badge {
+  position: absolute; top: 2px; right: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: rgba(0,0,0,.55); color: var(--accent); font-size: 9px; display: flex; align-items: center; justify-content: center;
+}
 
 .tl-transition-btn {
   display: inline-flex; align-items: center; justify-content: center;
@@ -128,7 +137,7 @@ html, body {
 .tool-btn {
   flex: 1; background: transparent; border: none; color: var(--text-0);
   display: flex; flex-direction: column; align-items: center; gap: 3px;
-  padding: 8px 2px; border-radius: 10px;
+  padding: 8px 2px; border-radius: 10px; min-height: 44px;
 }
 .tool-btn:active { background: var(--bg-2); }
 .tool-btn .icon { font-size: 19px; }
@@ -141,16 +150,42 @@ html, body {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 41;
   background: var(--bg-1); border-radius: 18px 18px 0 0; padding: 10px 16px calc(20px + env(safe-area-inset-bottom));
   box-shadow: 0 -8px 30px rgba(0,0,0,.5);
+  max-height: 70vh;
+  overflow-y: auto;
 }
 .sheet-handle { width: 36px; height: 4px; border-radius: 2px; background: var(--line); margin: 4px auto 14px; }
 .sheet-title { font-size: 15px; font-weight: 600; margin-bottom: 14px; }
 .sheet-options { display: flex; gap: 12px; }
+.sheet-options.wrap { flex-wrap: wrap; }
 .sheet-option {
-  flex: 1; background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px;
+  flex: 1; min-width: 84px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px;
   padding: 16px 8px; color: var(--text-0); display: flex; flex-direction: column; align-items: center; gap: 6px;
 }
 .sheet-option.active { border-color: var(--accent); color: var(--accent); }
 .sheet-option-icon { font-size: 22px; }
+
+.text-input {
+  width: 100%; background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px;
+  color: var(--text-0); padding: 10px; font-size: 14px; margin-bottom: 12px; resize: vertical;
+}
+.sheet-primary-btn {
+  width: 100%; background: var(--accent); color: #04211e; border: none; border-radius: 12px;
+  padding: 12px; font-weight: 600; font-size: 14px; margin-top: 4px;
+}
+
+/* Properties sheet */
+.props-sheet { padding-top: 6px; }
+.props-tabs { display: flex; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+.props-tab { flex: 1; background: transparent; border: none; color: var(--text-1); padding: 10px 4px; font-size: 12px; border-bottom: 2px solid transparent; }
+.props-tab.active { color: var(--text-0); border-bottom-color: var(--accent); }
+.props-body { min-height: 120px; }
+.field-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.field-row label { width: 78px; flex-shrink: 0; color: var(--text-1); font-size: 12px; }
+.field-row input[type="range"] { flex: 1; }
+.field-row input[type="number"] { width: 54px; background: var(--bg-2); border: 1px solid var(--line); color: var(--text-0); border-radius: 6px; padding: 5px; }
+.field-row select { flex: 1; background: var(--bg-2); border: 1px solid var(--line); color: var(--text-0); border-radius: 6px; padding: 8px; }
+.field-row input[type="checkbox"] { width: 20px; height: 20px; }
+.props-section-title { color: var(--text-1); text-transform: uppercase; font-size: 10px; letter-spacing: .5px; margin: 4px 0 10px; }
 
 /* Export modal */
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 50; display: flex; align-items: center; justify-content: center; }
@@ -167,4 +202,6 @@ html, body {
   background: var(--bg-2); border: 1px solid var(--line); color: var(--text-0);
   padding: 10px 18px; border-radius: 20px; font-size: 13px; z-index: 60;
   box-shadow: 0 4px 16px rgba(0,0,0,.4);
+  max-width: 85vw;
+  text-align: center;
 }
