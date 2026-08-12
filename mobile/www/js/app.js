@@ -45,6 +45,9 @@ function makeMediaClip(c) {
     volume: 0, opacity: 1,
     effect: { type: 'none', amount: 50 },
     mask: { type: 'none', posX: 0.5, posY: 0.5, sizeX: 0.3, sizeY: 0.3, invert: false },
+    // Green screen. Unlike desktop, keyed-out pixels here just go black
+    // (see maskFilterFor's comment - same reason: no layers to reveal).
+    chromaKey: { enabled: false, color: '#00ff00', density: 50, shadows: 50 },
   };
 }
 function makeTextClip(content, color) {
@@ -178,7 +181,7 @@ function renderTimeline() {
       name.className = 'tl-clip-name';
       name.textContent = clip.name;
       el.appendChild(name);
-      if ((clip.effect && clip.effect.type !== 'none') || (clip.mask && clip.mask.type !== 'none')) {
+      if ((clip.effect && clip.effect.type !== 'none') || (clip.mask && clip.mask.type !== 'none') || (clip.chromaKey && clip.chromaKey.enabled)) {
         const badge = document.createElement('div');
         badge.className = 'tl-clip-badge';
         badge.textContent = '✦';
@@ -370,8 +373,38 @@ function renderPropsBody() {
   } else if (propsActiveTab === 'mask') {
     const title = document.createElement('div');
     title.className = 'props-section-title';
-    title.textContent = 'Blend & Mask';
+    title.textContent = 'Green Screen';
     body.appendChild(title);
+
+    clip.chromaKey = clip.chromaKey || { enabled: false, color: '#00ff00', density: 50, shadows: 50 };
+    const ck = clip.chromaKey;
+
+    const ckToggle = document.createElement('input');
+    ckToggle.type = 'checkbox'; ckToggle.checked = !!ck.enabled;
+    ckToggle.addEventListener('change', () => { ck.enabled = ckToggle.checked; persist(); renderPropsBody(); });
+    body.appendChild(fieldRow('Enabled', ckToggle));
+
+    if (ck.enabled) {
+      const colorInput = document.createElement('input');
+      colorInput.type = 'color'; colorInput.value = ck.color || '#00ff00';
+      colorInput.addEventListener('input', () => { ck.color = colorInput.value; persist(); });
+      body.appendChild(fieldRow('Key Color', colorInput));
+
+      const densityInput = document.createElement('input');
+      densityInput.type = 'range'; densityInput.min = 0; densityInput.max = 100; densityInput.step = 1; densityInput.value = ck.density;
+      densityInput.addEventListener('input', () => { ck.density = Number(densityInput.value); persist(); });
+      body.appendChild(fieldRow('Density', densityInput));
+
+      const shadowsInput = document.createElement('input');
+      shadowsInput.type = 'range'; shadowsInput.min = 0; shadowsInput.max = 100; shadowsInput.step = 1; shadowsInput.value = ck.shadows;
+      shadowsInput.addEventListener('input', () => { ck.shadows = Number(shadowsInput.value); persist(); });
+      body.appendChild(fieldRow('Shadows', shadowsInput));
+    }
+
+    const maskTitle = document.createElement('div');
+    maskTitle.className = 'props-section-title';
+    maskTitle.textContent = 'Mask';
+    body.appendChild(maskTitle);
 
     const shapeSelect = document.createElement('select');
     [['none', 'None'], ['rect', 'Rectangle'], ['ellipse', 'Ellipse']].forEach(([v, label]) => {
@@ -532,6 +565,30 @@ function effectFilterFor(effect) {
   }
 }
 
+function hexToRgbInts(hex) {
+  hex = (hex || '#00ff00').replace('#', '');
+  if (hex.length === 3) hex = hex.split('').map((c) => c + c).join('');
+  const n = parseInt(hex, 16) || 0x00ff00;
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+// Green screen. Same reasoning as maskFilterFor - no layer underneath to
+// reveal, so keyed-out pixels darken to black via a per-pixel RGB-distance
+// test rather than real alpha (which would just get flattened to black by
+// the final opaque yuv420p encode anyway, so this is more predictable than
+// relying on that implicit flattening). Density widens the color range
+// that counts as "key", Shadows widens the soft blend band at its edge.
+function chromaKeyFilterFor(ck) {
+  const color = hexToRgbInts(ck.color);
+  const density = (ck.density == null ? 50 : ck.density) / 100;
+  const shadows = (ck.shadows == null ? 50 : ck.shadows) / 100;
+  const simThreshold = (density * 180).toFixed(2);
+  const blendRange = Math.max(1, shadows * 140).toFixed(2);
+  const dist = `sqrt(pow(r(X\\,Y)-${color.r}\\,2)+pow(g(X\\,Y)-${color.g}\\,2)+pow(b(X\\,Y)-${color.b}\\,2))`;
+  const factor = `min(max((${dist}-${simThreshold})/${blendRange}\\,0)\\,1)`;
+  return `geq=r='r(X\\,Y)*(${factor})':g='g(X\\,Y)*(${factor})':b='b(X\\,Y)*(${factor})'`;
+}
+
 // Mask multiplies RGB by 0/1 directly (no alpha channel involved) since
 // there's nothing underneath a clip to reveal in this single-track model -
 // "outside the mask" reads as black, which is the correct/only sensible
@@ -615,6 +672,7 @@ function buildExportArgs(outputPath) {
 
       const effectFilter = c.effect && effectFilterFor(c.effect);
       if (effectFilter) vChain += ',' + effectFilter;
+      if (c.chromaKey && c.chromaKey.enabled) vChain += ',' + chromaKeyFilterFor(c.chromaKey);
       if (c.mask && c.mask.type && c.mask.type !== 'none') vChain += ',' + maskFilterFor(c.mask);
       if (c.opacity != null && c.opacity < 0.999) {
         const op = Math.max(0, Math.min(1, c.opacity));

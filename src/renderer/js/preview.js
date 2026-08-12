@@ -145,6 +145,50 @@ function sampledMaskFor(clip, localTime) {
   };
 }
 
+function hexToRgb(hex) {
+  hex = (hex || '#00ff00').replace('#', '');
+  if (hex.length === 3) hex = hex.split('').map((c) => c + c).join('');
+  const n = parseInt(hex, 16) || 0x00ff00;
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+// Green screen / chroma key. A per-pixel RGB-distance test with a soft
+// blended edge band, matching the density (how wide the keyed color range
+// is) / shadows (how gradually its edge fades) controls in the Mask &
+// Blend tab - see exportGraph.js's buildChromaKeyFilter for why export
+// uses ffmpeg's real chromakey filter instead of this same math (this is
+// the preview-only approximation; the real render is more accurate since
+// it works in YUV, which is more forgiving of shadow/lighting variation).
+function applyChromaKey(source, chromaKey, w, h) {
+  if (!chromaKey || !chromaKey.enabled) return source;
+  const off = document.createElement('canvas');
+  off.width = w; off.height = h;
+  const octx = off.getContext('2d');
+  octx.drawImage(source, 0, 0, w, h);
+  let imgData;
+  try {
+    imgData = octx.getImageData(0, 0, w, h);
+  } catch (e) { return source; }
+  const data = imgData.data;
+  const key = hexToRgb(chromaKey.color);
+  const density = (chromaKey.density == null ? 50 : chromaKey.density) / 100;
+  const shadows = (chromaKey.shadows == null ? 50 : chromaKey.shadows) / 100;
+  const simThreshold = density * 180;
+  const blendRange = Math.max(1, shadows * 140);
+  for (let i = 0; i < data.length; i += 4) {
+    const dr = data[i] - key.r, dg = data[i + 1] - key.g, db = data[i + 2] - key.b;
+    const dist = Math.sqrt(dr * dr + dg * dg + db * db);
+    if (dist < simThreshold) {
+      data[i + 3] = 0;
+    } else if (dist < simThreshold + blendRange) {
+      const t = (dist - simThreshold) / blendRange;
+      data[i + 3] = Math.round(data[i + 3] * t);
+    }
+  }
+  octx.putImageData(imgData, 0, 0);
+  return off;
+}
+
 function applyStaticMask(source, mask, w, h) {
   if (!mask || !mask.type || mask.type === 'none') return source;
   const shape = document.createElement('canvas');
@@ -618,6 +662,7 @@ class PreviewEngine {
       if (targetFx) {
         for (const fx of targetFx) pipelineCanvas = applyEffectToCanvas(pipelineCanvas, fx, srcW, srcH);
       }
+      pipelineCanvas = applyChromaKey(pipelineCanvas, clip.chromaKey, srcW, srcH);
       pipelineCanvas = applyStaticMask(pipelineCanvas, sampledMaskFor(clip, localTime), srcW, srcH);
 
       const state = this.transformStateFor(clip, localTime, srcW, srcH);

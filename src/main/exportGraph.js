@@ -171,6 +171,29 @@ function convolutionFilter(kernel) {
   return `convolution=0m='${k}':1m='${k}':2m='${k}':3m='0 0 0 0 1 0 0 0 0'`;
 }
 
+// Green screen / chroma key (Mask & Blend tab). Uses ffmpeg's real chromakey
+// filter (verified against this exact ffmpeg-static build) rather than a
+// hand-rolled geq distance test, since desktop actually has layers to
+// reveal through the resulting transparency - unlike the mobile app, which
+// has no compositing to reveal anything under a keyed-out pixel and so
+// implements this as a plain darken-to-black instead (see mobile/www/js/
+// app.js's chromaKeyFilterFor). "Density" maps to similarity (how wide a
+// color range around the key color counts as keyed), "Shadows" maps to
+// blend (how gradually the edge of that range fades out) - chromakey's
+// matching is done in YUV internally regardless of the `yuv` option, which
+// is exactly what makes it more forgiving of shadow/lighting variation on
+// the green screen than a naive RGB distance test would be.
+function buildChromaKeyFilter(clip) {
+  const ck = clip.chromaKey;
+  if (!ck || !ck.enabled) return null;
+  const color = (ck.color || '#00ff00').replace('#', '0x');
+  const density = clamp(ck.density == null ? 50 : ck.density, 0, 100) / 100;
+  const shadows = clamp(ck.shadows == null ? 50 : ck.shadows, 0, 100) / 100;
+  const similarity = Math.max(0.00001, Math.min(1, 0.03 + density * 0.5)).toFixed(4);
+  const blend = Math.max(0, Math.min(1, shadows * 0.6)).toFixed(4);
+  return `chromakey=color=${color}:similarity=${similarity}:blend=${blend}`;
+}
+
 function buildEffectFilters(clip) {
   const e = clip.effect || {};
   const amt = clamp(e.amount == null ? 50 : e.amount, 0, 100);
@@ -606,6 +629,14 @@ function buildFilterGraph(project, outputPath) {
 
       // color adjustments
       chain.push(...buildAdjustmentFilters(clip));
+
+      // green screen / chroma key - before effects/mask so a blurred or
+      // masked edge doesn't fight with the key color detection.
+      const chromaKeyFilter = buildChromaKeyFilter(clip);
+      if (chromaKeyFilter) {
+        chain.push('format=rgba');
+        chain.push(chromaKeyFilter);
+      }
 
       // effect clips scoped to this specific clip (blur/pixelate/etc.),
       // gated to the overlap between the effect clip's window and this

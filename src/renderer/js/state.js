@@ -59,6 +59,11 @@ function makeClip(mediaId, opts) {
     // rect/ellipse region. pos/size are fractions (0-1) of the clip's own
     // rendered frame, not canvas pixels.
     mask: { type: 'none', posX: 0.5, posY: 0.5, sizeX: 0.3, sizeY: 0.3, invert: false },
+    // Green screen (Mask & Blend tab). density -> chromakey's "similarity"
+    // (how wide a color range is keyed out), shadows -> "blend" (how
+    // gradually that range's edge fades) - see exportGraph.js's
+    // buildChromaKeyFilter for the exact mapping and why.
+    chromaKey: { enabled: false, color: '#00ff00', density: 50, shadows: 50 },
   }, opts || {});
 }
 

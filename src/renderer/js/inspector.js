@@ -126,6 +126,52 @@ function buildBlendMaskPane(container, clip) {
   // Masks (rect/ellipse crop) only apply to media clips - text/adjustment/
   // effect clips don't go through the per-pixel geq mask path in export.
   if (clip.kind !== 'media') return;
+
+  clip.chromaKey = clip.chromaKey || { enabled: false, color: '#00ff00', density: 50, shadows: 50 };
+  const ck = clip.chromaKey;
+
+  sectionTitle(container, 'Green Screen');
+  const ckToggleRow = document.createElement('div');
+  ckToggleRow.className = 'field-row';
+  const ckToggleLabel = document.createElement('label');
+  ckToggleLabel.textContent = 'Enabled';
+  ckToggleRow.appendChild(ckToggleLabel);
+  const ckToggle = document.createElement('input');
+  ckToggle.type = 'checkbox';
+  ckToggle.checked = !!ck.enabled;
+  ckToggleRow.appendChild(ckToggle);
+  container.appendChild(ckToggleRow);
+
+  const ckColorRow = document.createElement('div');
+  ckColorRow.className = 'field-row';
+  const ckColorLabel = document.createElement('label');
+  ckColorLabel.textContent = 'Key Color';
+  ckColorRow.appendChild(ckColorLabel);
+  const ckColorInput = document.createElement('input');
+  ckColorInput.type = 'color';
+  ckColorInput.value = ck.color || '#00ff00';
+  ckColorInput.addEventListener('input', () => { ck.color = ckColorInput.value; rerenderPreviewNow(); });
+  ckColorRow.appendChild(ckColorInput);
+  container.appendChild(ckColorRow);
+
+  const ckDensityField = makeField(container, {
+    label: 'Density', min: 0, max: 100, step: 1, animatable: false, property: 'chromaKey_density', clip,
+    getStatic: () => ck.density, setStatic: (v) => { ck.density = v; },
+  });
+  const ckShadowsField = makeField(container, {
+    label: 'Shadows', min: 0, max: 100, step: 1, animatable: false, property: 'chromaKey_shadows', clip,
+    getStatic: () => ck.shadows, setStatic: (v) => { ck.shadows = v; },
+  });
+
+  function syncChromaKeyFieldsEnabled() {
+    const on = !!ck.enabled;
+    ckColorRow.style.opacity = on ? '1' : '0.45';
+    ckDensityField.row.style.opacity = on ? '1' : '0.45';
+    ckShadowsField.row.style.opacity = on ? '1' : '0.45';
+  }
+  ckToggle.addEventListener('change', () => { ck.enabled = ckToggle.checked; syncChromaKeyFieldsEnabled(); rerenderPreviewNow(); });
+  syncChromaKeyFieldsEnabled();
+
   clip.mask = clip.mask || { type: 'none', posX: 0.5, posY: 0.5, sizeX: 0.3, sizeY: 0.3, invert: false };
   const m = clip.mask;
 
