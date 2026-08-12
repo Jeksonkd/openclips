@@ -17,7 +17,9 @@
 
   <div id="editor-screen" class="screen hidden">
     <div id="preview-wrap">
-      <video id="preview-video" playsinline muted></video>
+      <video id="preview-video" playsinline></video>
+      <img id="preview-image" class="hidden" />
+      <div id="text-preview" class="hidden"></div>
       <div id="no-clip-hint">Add a clip to begin</div>
     </div>
 
@@ -36,6 +38,7 @@
       <button class="tool-btn" id="tool-split"><span class="icon">✂</span><span class="label">Split</span></button>
       <button class="tool-btn" id="tool-delete"><span class="icon">🗑</span><span class="label">Delete</span></button>
       <button class="tool-btn" id="tool-transition"><span class="icon">◐</span><span class="label">Transition</span></button>
+      <button class="tool-btn" id="tool-settings"><span class="icon">⚙</span><span class="label">Settings</span></button>
       <button class="tool-btn primary" id="tool-export"><span class="icon">⬆</span><span class="label">Export</span></button>
     </div>
   </div>
@@ -98,6 +101,40 @@
     <button class="props-tab" data-tab="mask">Mask &amp; Blend</button>
   </div>
   <div class="props-body" id="props-body"></div>
+</div>
+
+<div id="settings-sheet" class="sheet hidden">
+  <div class="sheet-handle"></div>
+  <div class="sheet-title">Export Settings</div>
+  <div class="field-row">
+    <label>Quality</label>
+    <select id="settings-quality">
+      <option value="low">Low</option>
+      <option value="medium">Medium</option>
+      <option value="high" selected>High</option>
+      <option value="max">Maximum</option>
+    </select>
+  </div>
+  <div class="field-row">
+    <label>Framerate</label>
+    <select id="settings-framerate">
+      <option value="24">24 fps</option>
+      <option value="25">25 fps</option>
+      <option value="30" selected>30 fps</option>
+      <option value="60">60 fps</option>
+    </select>
+  </div>
+  <div class="field-row">
+    <label>Bitrate</label>
+    <select id="settings-bitrate">
+      <option value="auto" selected>Auto (from quality)</option>
+      <option value="4000">4 Mbps</option>
+      <option value="8000">8 Mbps</option>
+      <option value="16000">16 Mbps</option>
+      <option value="24000">24 Mbps</option>
+    </select>
+  </div>
+  <button id="settings-done-btn" class="sheet-primary-btn">Done</button>
 </div>
 
 <div id="export-modal" class="modal hidden">

@@ -5,6 +5,7 @@ import android.content.ContentValues;
 import android.content.Intent;
 import android.database.Cursor;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Build;
@@ -42,6 +43,19 @@ import java.util.List;
 @CapacitorPlugin(name = "OpenClipsNative")
 public class OpenClipsNativePlugin extends Plugin {
 
+    // System font paths vary across Android versions/OEM skins - Roboto has
+    // been the default for most of Android's life, but isn't guaranteed
+    // (some devices/versions ship Noto Sans as the primary system font
+    // instead). Trying a short list and reporting whichever actually
+    // exists on this device is safer than hardcoding one path and hoping.
+    private static final String[] FONT_CANDIDATES = {
+        "/system/fonts/Roboto-Regular.ttf",
+        "/system/fonts/NotoSans-Regular.ttf",
+        "/system/fonts/NotoSans-VF.ttf",
+        "/system/fonts/DroidSans.ttf",
+        "/system/fonts/Arial.ttf",
+    };
+
     @PluginMethod
     public void getPaths(PluginCall call) {
         File exportDir = new File(getContext().getCacheDir(), "exports");
@@ -52,16 +66,35 @@ public class OpenClipsNativePlugin extends Plugin {
     }
 
     @PluginMethod
-    public void pickVideos(PluginCall call) {
+    public void getSystemFontPath(PluginCall call) {
+        for (String path : FONT_CANDIDATES) {
+            if (new File(path).exists()) {
+                JSObject ret = new JSObject();
+                ret.put("path", path);
+                call.resolve(ret);
+                return;
+            }
+        }
+        // Last resort: scan the fonts directory for literally anything.
+        File fontsDir = new File("/system/fonts");
+        File[] all = fontsDir.exists() ? fontsDir.listFiles((d, name) -> name.endsWith(".ttf") || name.endsWith(".otf")) : null;
+        JSObject ret = new JSObject();
+        ret.put("path", (all != null && all.length > 0) ? all[0].getAbsolutePath() : FONT_CANDIDATES[0]);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void pickMedia(PluginCall call) {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("video/*");
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] { "video/*", "image/*" });
         intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-        startActivityForResult(call, intent, "pickVideosResult");
+        startActivityForResult(call, intent, "pickMediaResult");
     }
 
     @ActivityCallback
-    private void pickVideosResult(PluginCall call, ActivityResult result) {
+    private void pickMediaResult(PluginCall call, ActivityResult result) {
         if (call == null) return;
         JSArray clips = new JSArray();
         try {
@@ -87,15 +120,18 @@ public class OpenClipsNativePlugin extends Plugin {
             ret.put("clips", clips);
             call.resolve(ret);
         } catch (Exception e) {
-            call.reject("pickVideos failed: " + e.getMessage());
+            call.reject("pickMedia failed: " + e.getMessage());
         }
     }
 
     private JSObject importOne(Uri uri) throws Exception {
         String name = queryDisplayName(uri);
+        String mime = getContext().getContentResolver().getType(uri);
+        boolean isImage = mime != null && mime.startsWith("image/");
+
         File outDir = new File(getContext().getFilesDir(), "clips");
         if (!outDir.exists()) outDir.mkdirs();
-        String base = (name != null ? name : "clip.mp4").replaceAll("[^a-zA-Z0-9._-]", "_");
+        String base = (name != null ? name : (isImage ? "image.jpg" : "clip.mp4")).replaceAll("[^a-zA-Z0-9._-]", "_");
         File outFile = new File(outDir, System.currentTimeMillis() + "_" + base);
         try (InputStream in = getContext().getContentResolver().openInputStream(uri);
              OutputStream out = new FileOutputStream(outFile)) {
@@ -107,26 +143,36 @@ public class OpenClipsNativePlugin extends Plugin {
 
         double duration = 0;
         int width = 0, height = 0;
-        MediaMetadataRetriever mmr = new MediaMetadataRetriever();
-        try {
-            mmr.setDataSource(outFile.getAbsolutePath());
-            String d = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
-            if (d != null) duration = Double.parseDouble(d) / 1000.0;
-            String w = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
-            String h = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT);
-            String rotation = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION);
-            if (w != null) width = Integer.parseInt(w);
-            if (h != null) height = Integer.parseInt(h);
-            if ("90".equals(rotation) || "270".equals(rotation)) {
-                int tmp = width; width = height; height = tmp;
+
+        if (isImage) {
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(outFile.getAbsolutePath(), opts);
+            width = opts.outWidth;
+            height = opts.outHeight;
+        } else {
+            MediaMetadataRetriever mmr = new MediaMetadataRetriever();
+            try {
+                mmr.setDataSource(outFile.getAbsolutePath());
+                String d = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+                if (d != null) duration = Double.parseDouble(d) / 1000.0;
+                String w = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
+                String h = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT);
+                String rotation = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION);
+                if (w != null) width = Integer.parseInt(w);
+                if (h != null) height = Integer.parseInt(h);
+                if ("90".equals(rotation) || "270".equals(rotation)) {
+                    int tmp = width; width = height; height = tmp;
+                }
+            } finally {
+                try { mmr.release(); } catch (Exception ignored) { /* nothing more to do */ }
             }
-        } finally {
-            try { mmr.release(); } catch (Exception ignored) { /* nothing more to do */ }
         }
 
         JSObject clip = new JSObject();
         clip.put("path", outFile.getAbsolutePath());
         clip.put("name", name != null ? name : outFile.getName());
+        clip.put("type", isImage ? "image" : "video");
         clip.put("duration", duration);
         clip.put("width", width);
         clip.put("height", height);
@@ -147,9 +193,20 @@ public class OpenClipsNativePlugin extends Plugin {
     @PluginMethod
     public void generateThumbnail(PluginCall call) {
         String path = call.getString("path");
+        String type = call.getString("type", "video");
         Double atSecondsArg = call.getDouble("atSeconds");
         double atSeconds = atSecondsArg == null ? 0.0 : atSecondsArg;
         if (path == null) { call.reject("path required"); return; }
+
+        if ("image".equals(type)) {
+            // Images already live at a local path the WebView can load
+            // directly via Capacitor.convertFileSrc - no extraction needed.
+            JSObject ret = new JSObject();
+            ret.put("path", path);
+            call.resolve(ret);
+            return;
+        }
+
         MediaMetadataRetriever mmr = new MediaMetadataRetriever();
         try {
             mmr.setDataSource(path);

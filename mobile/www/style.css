@@ -39,19 +39,27 @@ html, body {
 }
 .fab-import:active { transform: scale(0.97); }
 
-/* Preview */
+/* Preview - fixed proportion of viewport height (not flex:1) so the
+   timeline below gets a guaranteed, larger share of the screen rather than
+   preview eating all remaining space. */
 #preview-wrap {
   position: relative;
-  flex: 1;
-  min-height: 160px;
+  flex: 0 0 auto;
+  height: 34vh;
+  min-height: 140px;
   background: #000;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
 }
-#preview-video { max-width: 100%; max-height: 100%; background: #000; }
+#preview-video, #preview-image { max-width: 100%; max-height: 100%; background: #000; }
 #no-clip-hint { position: absolute; color: var(--text-1); font-size: 14px; pointer-events: none; }
+#text-preview {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  padding: 20px; text-align: center; font-size: 22px; font-weight: 600; word-break: break-word;
+  background: #000;
+}
 
 #scrub-row { display: flex; align-items: center; gap: 10px; padding: 8px 14px; flex-shrink: 0; }
 .play-btn {
@@ -61,11 +69,12 @@ html, body {
 .play-btn.playing { color: var(--accent); border-color: var(--accent); }
 #time-readout { color: var(--text-1); font-variant-numeric: tabular-nums; font-size: 12px; }
 
-/* Timeline */
+/* Timeline - grown from a single fixed 84px row and given more of the
+   screen than before, per feedback that there wasn't enough room here. */
 #timeline-scroll {
   position: relative;
-  height: 84px;
-  flex-shrink: 0;
+  flex: 1;
+  min-height: 130px;
   overflow-x: auto;
   overflow-y: hidden;
   background: var(--bg-1);
@@ -73,6 +82,7 @@ html, body {
   border-bottom: 1px solid var(--line);
   padding: 10px 50vw;
   white-space: nowrap;
+  touch-action: pan-x;
 }
 #timeline-track { position: relative; height: 64px; display: inline-flex; align-items: center; }
 #timeline-playhead {
@@ -96,7 +106,9 @@ html, body {
   background-size: cover;
   background-position: center;
   margin-right: 3px;
+  touch-action: none;
 }
+.tl-clip.dragging { opacity: 0.6; z-index: 10; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
 .tl-clip.text-clip { background: linear-gradient(135deg, #6b4f8c, #8a5fe0); display: flex; align-items: center; justify-content: center; padding: 4px; }
 .tl-clip.text-clip .tl-clip-text-preview { color: #fff; font-size: 10px; text-align: center; overflow: hidden; max-height: 100%; }
 .tl-clip.selected { border-color: var(--accent); }

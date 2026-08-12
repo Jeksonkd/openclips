@@ -1,14 +1,15 @@
 // OpenClips mobile - a scoped-down CapCut-style companion editor.
 // State is intentionally much simpler than the desktop app: one linear
-// sequence of clips (no multi-track compositing). Media clips can carry a
-// simple effect and/or a static rect/ellipse mask; text clips are their own
-// solid-color segments in the same sequence (not an overlay on top of
-// video - see README for why). Persisted to localStorage on every change:
-// Android can recreate the whole Activity (and wipe all JS state) when the
-// system reclaims memory while a heavy external activity like the document
-// picker is in front of it - that's the most likely explanation for
-// "adding more media doesn't work after the first time", since the result
-// would come back to a freshly-reloaded page with no memory of anything.
+// sequence of clips (no multi-track compositing). Media clips (video or
+// image) can carry a simple effect, green screen, and/or a static
+// rect/ellipse mask; text clips are their own solid-color segments in the
+// same sequence (not an overlay on top of video - see README for why).
+// Persisted to localStorage on every change: Android can recreate the
+// whole Activity (and wipe all JS state) when the system reclaims memory
+// while a heavy external activity like the document picker is in front of
+// it - that's the most likely explanation for "adding more media doesn't
+// work after the first time", since the result would come back to a
+// freshly-reloaded page with no memory of anything.
 
 const state = {
   clips: [], // see makeMediaClip/makeTextClip below for shape
@@ -16,6 +17,8 @@ const state = {
   currentTime: 0,
   isPlaying: false,
   activeVideoPath: null,
+  exportSettings: { quality: 'high', framerate: 30, bitrateKbps: null }, // bitrateKbps null = "auto" (CRF-based)
+  fontPath: null, // fetched once from native at startup, used by text clip export
 };
 
 const FADE_DUR = 0.5;
@@ -25,6 +28,7 @@ const EFFECT_CHOICES = [
   ['none', 'None', '∅'], ['blur', 'Blur', '◌'], ['bw', 'B & W', '◑'],
   ['invert', 'Invert', '◒'], ['sepia', 'Sepia', '◓'],
 ];
+const QUALITY_CRF = { low: 30, medium: 25, high: 21, max: 17 };
 
 function uid() { return 'c' + Math.random().toString(36).slice(2) + Date.now().toString(36); }
 function Native() { return window.Capacitor.Plugins.OpenClipsNative; }
@@ -37,11 +41,13 @@ function fmtTime(t) {
 }
 
 function makeMediaClip(c) {
+  const isImage = c.type === 'image';
+  const duration = isImage ? 5 : c.duration;
   return {
-    id: uid(), kind: 'media',
-    path: c.path, name: c.name, duration: c.duration, width: c.width, height: c.height,
-    inPoint: 0, outPoint: c.duration,
-    thumbPath: null, transitionAfter: 'none',
+    id: uid(), kind: 'media', type: isImage ? 'image' : 'video',
+    path: c.path, name: c.name, duration, width: c.width, height: c.height,
+    inPoint: 0, outPoint: duration,
+    thumbPath: isImage ? c.path : null, transitionAfter: 'none',
     volume: 0, opacity: 1,
     effect: { type: 'none', amount: 50 },
     mask: { type: 'none', posX: 0.5, posY: 0.5, sizeX: 0.3, sizeY: 0.3, invert: false },
@@ -72,7 +78,9 @@ function showToast(msg) {
 // ---- persistence ----
 function persist() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ clips: state.clips, selectedClipId: state.selectedClipId }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      clips: state.clips, selectedClipId: state.selectedClipId, exportSettings: state.exportSettings,
+    }));
   } catch (e) { /* storage full or unavailable - not fatal, just no restore */ }
 }
 function restore() {
@@ -83,6 +91,7 @@ function restore() {
     if (!data.clips || data.clips.length === 0) return false;
     state.clips = data.clips;
     state.selectedClipId = data.selectedClipId || null;
+    if (data.exportSettings) state.exportSettings = data.exportSettings;
     return true;
   } catch (e) { return false; }
 }
@@ -111,7 +120,7 @@ async function importClips() {
   closeAllSheets();
   let result;
   try {
-    result = await Native().pickVideos();
+    result = await Native().pickMedia();
   } catch (e) {
     showToast('Import failed: ' + (e && e.message ? e.message : e));
     return;
@@ -125,12 +134,14 @@ async function importClips() {
   selectClip(newClips[0].id);
   seekGlobal(clipStartTime(newClips[0].id));
   persist();
-  for (const c of newClips) generateThumbFor(c.path);
+  for (const c of newClips) {
+    if (c.type === 'video') generateThumbFor(c.path, 'video');
+  }
 }
 
-async function generateThumbFor(path) {
+async function generateThumbFor(path, type) {
   try {
-    const res = await Native().generateThumbnail({ path, atSeconds: 0.1 });
+    const res = await Native().generateThumbnail({ path, atSeconds: 0.1, type });
     const clip = state.clips.find((c) => c.kind === 'media' && c.path === path);
     if (clip && res && res.path) {
       clip.thumbPath = res.path;
@@ -190,7 +201,7 @@ function renderTimeline() {
     }
 
     let leftHandle = null, rightHandle = null;
-    if (!isText) {
+    if (!isText && clip.type !== 'image') {
       leftHandle = document.createElement('div');
       leftHandle.className = 'tl-handle left';
       rightHandle = document.createElement('div');
@@ -201,12 +212,7 @@ function renderTimeline() {
       wireTrimHandle(rightHandle, clip, 'out');
     }
 
-    el.addEventListener('click', (e) => {
-      if (e.target === leftHandle || e.target === rightHandle) return;
-      selectClip(clip.id);
-      seekGlobal(clipStartTime(clip.id));
-      openPropsSheet(clip);
-    });
+    wireClipDrag(el, clip, leftHandle, rightHandle);
 
     track.appendChild(el);
 
@@ -252,6 +258,58 @@ function wireTrimHandle(handleEl, clip, side) {
   });
 }
 
+// Dragging the body of a clip (not its trim handles) reorders it - a short
+// move (a tap, or a small jitter) still counts as select+seek, only a real
+// drag past a small threshold triggers a reorder.
+function wireClipDrag(el, clip, leftHandle, rightHandle) {
+  el.addEventListener('pointerdown', (e) => {
+    if (e.target === leftHandle || e.target === rightHandle) return;
+    el.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    let dragging = false;
+    let placeholderIdx = clipIndex(clip.id);
+
+    const onMove = (ev) => {
+      const dx = ev.clientX - startX;
+      if (!dragging && Math.abs(dx) < 10) return;
+      dragging = true;
+      el.classList.add('dragging');
+      const track = document.getElementById('timeline-track');
+      const siblings = Array.from(track.querySelectorAll('.tl-clip')).filter((s) => s !== el);
+      const elRect = el.getBoundingClientRect();
+      const elCenter = elRect.left + elRect.width / 2 + dx;
+      let targetIdx = state.clips.length - 1;
+      for (let i = 0; i < siblings.length; i++) {
+        const r = siblings[i].getBoundingClientRect();
+        if (elCenter < r.left + r.width / 2) { targetIdx = clipIndex(siblings[i].dataset.clipId); break; }
+      }
+      placeholderIdx = targetIdx;
+      el.style.transform = `translateX(${dx}px)`;
+    };
+    const onUp = () => {
+      el.removeEventListener('pointermove', onMove);
+      el.removeEventListener('pointerup', onUp);
+      el.style.transform = '';
+      el.classList.remove('dragging');
+      if (dragging) {
+        const fromIdx = clipIndex(clip.id);
+        if (fromIdx !== -1 && placeholderIdx !== fromIdx) {
+          state.clips.splice(fromIdx, 1);
+          state.clips.splice(placeholderIdx > fromIdx ? placeholderIdx - 1 : placeholderIdx, 0, clip);
+          renderTimeline();
+          persist();
+        }
+      } else {
+        selectClip(clip.id);
+        seekGlobal(clipStartTime(clip.id));
+        openPropsSheet(clip);
+      }
+    };
+    el.addEventListener('pointermove', onMove);
+    el.addEventListener('pointerup', onUp);
+  });
+}
+
 // ---- transition sheet ----
 let transitionSheetClip = null;
 function openTransitionSheet(clip) {
@@ -287,10 +345,8 @@ function submitTextSheet() {
 }
 
 // ---- effect sheet (from Add, or from the properties panel) ----
-let effectSheetTarget = null; // clip the effect sheet applies to
 function openEffectSheet(clip) {
   if (!clip) { showToast('Select a clip first'); return; }
-  effectSheetTarget = clip;
   const container = document.getElementById('effect-options');
   container.innerHTML = '';
   EFFECT_CHOICES.forEach(([type, label, icon]) => {
@@ -302,11 +358,20 @@ function openEffectSheet(clip) {
       closeAllSheets();
       renderTimeline();
       persist();
+      seekGlobal(state.currentTime);
       showToast(`${label} applied`);
     });
     container.appendChild(btn);
   });
   openSheet('effect-sheet');
+}
+
+// ---- export settings sheet ----
+function openSettingsSheet() {
+  document.getElementById('settings-quality').value = state.exportSettings.quality;
+  document.getElementById('settings-framerate').value = String(state.exportSettings.framerate);
+  document.getElementById('settings-bitrate').value = state.exportSettings.bitrateKbps ? String(state.exportSettings.bitrateKbps) : 'auto';
+  openSheet('settings-sheet');
 }
 
 // ---- properties sheet (tap a clip -> Adjust / Effect / Mask & Blend) ----
@@ -342,12 +407,12 @@ function renderPropsBody() {
   if (propsActiveTab === 'adjust') {
     const volRange = document.createElement('input');
     volRange.type = 'range'; volRange.min = -30; volRange.max = 12; volRange.step = 1; volRange.value = clip.volume;
-    volRange.addEventListener('input', () => { clip.volume = Number(volRange.value); persist(); });
+    volRange.addEventListener('input', () => { clip.volume = Number(volRange.value); persist(); applyLivePreviewAudio(); });
     body.appendChild(fieldRow(`Volume (${clip.volume}dB)`, volRange));
 
     const opRange = document.createElement('input');
     opRange.type = 'range'; opRange.min = 0; opRange.max = 1; opRange.step = 0.05; opRange.value = clip.opacity;
-    opRange.addEventListener('input', () => { clip.opacity = Number(opRange.value); persist(); });
+    opRange.addEventListener('input', () => { clip.opacity = Number(opRange.value); persist(); seekGlobal(state.currentTime); });
     body.appendChild(fieldRow('Brightness', opRange));
 
   } else if (propsActiveTab === 'effect') {
@@ -448,12 +513,14 @@ function splitSelectedAtPlayhead() {
   const second = Object.assign({}, clip, {
     id: uid(), inPoint: localTime, transitionAfter: clip.transitionAfter,
     effect: Object.assign({}, clip.effect), mask: Object.assign({}, clip.mask),
+    chromaKey: Object.assign({}, clip.chromaKey),
   });
   clip.outPoint = localTime;
   clip.transitionAfter = 'none';
   const idx = clipIndex(clip.id);
   state.clips.splice(idx + 1, 0, second);
   renderTimeline();
+  seekGlobal(state.currentTime);
   persist();
 }
 
@@ -472,8 +539,10 @@ function deleteSelected() {
   }
 }
 
-// ---- playback ----
+// ---- playback / preview ----
 const videoEl = document.getElementById('preview-video');
+const imageEl = document.getElementById('preview-image');
+const textPreviewEl = document.getElementById('text-preview');
 
 function clipAtGlobalTime(t) {
   let acc = 0;
@@ -485,14 +554,28 @@ function clipAtGlobalTime(t) {
   return null;
 }
 
+function applyLivePreviewAudio() {
+  const found = clipAtGlobalTime(state.currentTime);
+  if (!found || found.clip.kind !== 'media' || found.clip.type !== 'video') return;
+  const linear = Math.pow(10, (found.clip.volume || 0) / 20);
+  videoEl.volume = Math.max(0, Math.min(1, linear));
+}
+
+function showPreviewLayer(kind) {
+  videoEl.classList.toggle('hidden', kind !== 'video');
+  imageEl.classList.toggle('hidden', kind !== 'image');
+  textPreviewEl.classList.toggle('hidden', kind !== 'text');
+}
+
 function seekGlobal(t) {
   state.currentTime = Math.max(0, Math.min(totalDuration(), t));
   const found = clipAtGlobalTime(state.currentTime);
   document.getElementById('no-clip-hint').classList.toggle('hidden', !!found);
-  if (found && found.clip.kind === 'media') {
+
+  if (found && found.clip.kind === 'media' && found.clip.type === 'video') {
     const { clip, localOffset } = found;
     const srcTime = clip.inPoint + Math.max(0, localOffset);
-    videoEl.classList.remove('hidden');
+    showPreviewLayer('video');
     if (state.activeVideoPath !== clip.path) {
       videoEl.src = toFileSrc(clip.path);
       state.activeVideoPath = clip.path;
@@ -500,12 +583,22 @@ function seekGlobal(t) {
     if (Math.abs(videoEl.currentTime - srcTime) > 0.15) {
       try { videoEl.currentTime = srcTime; } catch (e) {}
     }
+    applyLivePreviewAudio();
+  } else if (found && found.clip.kind === 'media' && found.clip.type === 'image') {
+    showPreviewLayer('image');
+    if (!videoEl.paused) videoEl.pause();
+    imageEl.src = toFileSrc(found.clip.path);
+  } else if (found && found.clip.kind === 'text') {
+    showPreviewLayer('text');
+    if (!videoEl.paused) videoEl.pause();
+    textPreviewEl.textContent = found.clip.text.content;
+    textPreviewEl.style.color = found.clip.text.color || '#ffffff';
   } else {
-    // Text segment: nothing to play back visually here in the lightweight
-    // preview (export renders its real solid-color+text look) - just pause
-    // whatever video was showing so it doesn't keep playing underneath.
+    showPreviewLayer(null);
     if (!videoEl.paused) videoEl.pause();
   }
+
+  state._programmaticScroll = true;
   document.getElementById('timeline-scroll').scrollLeft = state.currentTime * PX_PER_SEC;
   document.getElementById('time-readout').textContent = `${fmtTime(state.currentTime)} / ${fmtTime(totalDuration())}`;
 }
@@ -519,7 +612,7 @@ function play() {
   document.getElementById('btn-playpause').classList.add('playing');
   wallStart = performance.now();
   timeStart = state.currentTime;
-  videoEl.play().catch(() => {});
+  if (!videoEl.classList.contains('hidden')) videoEl.play().catch(() => {});
   const loop = () => {
     if (!state.isPlaying) return;
     const elapsed = (performance.now() - wallStart) / 1000;
@@ -538,6 +631,37 @@ function pause() {
   if (rafId) cancelAnimationFrame(rafId);
   rafId = null;
   videoEl.pause();
+}
+
+// Dragging the timeline strip scrubs the (fixed, centered) playhead - this
+// was previously a no-op listener, which is why the playhead looked frozen
+// no matter what you did with the strip beneath it.
+function wireTimelineScrub() {
+  const scrollEl = document.getElementById('timeline-scroll');
+  scrollEl.addEventListener('scroll', () => {
+    if (state._programmaticScroll) { state._programmaticScroll = false; return; }
+    if (state.isPlaying) pause();
+    const t = scrollEl.scrollLeft / PX_PER_SEC;
+    state.currentTime = Math.max(0, Math.min(totalDuration(), t));
+    const found = clipAtGlobalTime(state.currentTime);
+    document.getElementById('no-clip-hint').classList.toggle('hidden', !!found);
+    if (found && found.clip.kind === 'media' && found.clip.type === 'video') {
+      const srcTime = found.clip.inPoint + Math.max(0, found.localOffset);
+      showPreviewLayer('video');
+      if (state.activeVideoPath !== found.clip.path) { videoEl.src = toFileSrc(found.clip.path); state.activeVideoPath = found.clip.path; }
+      try { videoEl.currentTime = srcTime; } catch (e) {}
+    } else if (found && found.clip.kind === 'media' && found.clip.type === 'image') {
+      showPreviewLayer('image');
+      imageEl.src = toFileSrc(found.clip.path);
+    } else if (found && found.clip.kind === 'text') {
+      showPreviewLayer('text');
+      textPreviewEl.textContent = found.clip.text.content;
+      textPreviewEl.style.color = found.clip.text.color || '#ffffff';
+    } else {
+      showPreviewLayer(null);
+    }
+    document.getElementById('time-readout').textContent = `${fmtTime(state.currentTime)} / ${fmtTime(totalDuration())}`;
+  });
 }
 
 // ---- export ----
@@ -641,6 +765,8 @@ function escDrawtext(s) {
 function buildExportArgs(outputPath) {
   const clips = state.clips;
   const { W, H } = computeCanvasSize(clips);
+  const fps = state.exportSettings.framerate || 30;
+  const fontPath = state.fontPath || '/system/fonts/Roboto-Regular.ttf';
 
   const args = ['-y'];
   const filterParts = [];
@@ -652,32 +778,54 @@ function buildExportArgs(outputPath) {
     let vLabel = `v${i}`, aLabel = `a${i}`;
 
     if (c.kind === 'text') {
-      args.push('-f', 'lavfi', '-i', `color=c=black:s=${W}x${H}:d=${dur.toFixed(3)}:r=30`);
+      args.push('-f', 'lavfi', '-i', `color=c=black:s=${W}x${H}:d=${dur.toFixed(3)}:r=${fps}`);
       const colorIdx = inputIdx++;
       args.push('-f', 'lavfi', '-t', dur.toFixed(3), '-i', 'anullsrc=r=48000:cl=stereo');
       const silenceIdx = inputIdx++;
       const txt = escDrawtext(c.text.content);
       const color = (c.text.color || '#ffffff').replace('#', '0x');
       const fontSize = Math.round(H * 0.06);
-      let vChain = `[${colorIdx}:v]drawtext=fontfile=/system/fonts/Roboto-Regular.ttf:text='${txt}':` +
-        `fontcolor=${color}:fontsize=${fontSize}:x=(w-text_w)/2:y=(h-text_h)/2,format=yuv420p,setsar=1,fps=30`;
+      // format=rgba before drawtext/geq-family filters - text/mask/chromakey
+      // negotiation is more reliable against an explicit alpha-capable
+      // format than whatever the lavfi color source happens to default to.
+      let vChain = `[${colorIdx}:v]format=rgba,drawtext=fontfile=${fontPath}:text='${txt}':` +
+        `fontcolor=${color}:fontsize=${fontSize}:x=(w-text_w)/2:y=(h-text_h)/2,format=yuv420p,setsar=1,fps=${fps}`;
+      filterParts.push(`${vChain}[${vLabel}]`);
+      filterParts.push(`[${silenceIdx}:a]anull[${aLabel}]`);
+    } else if (c.type === 'image') {
+      args.push('-loop', '1', '-framerate', String(fps), '-t', dur.toFixed(3), '-i', c.path);
+      const idx = inputIdx++;
+      args.push('-f', 'lavfi', '-t', dur.toFixed(3), '-i', 'anullsrc=r=48000:cl=stereo');
+      const silenceIdx = inputIdx++;
+      let vChain = `[${idx}:v]format=rgba,scale=${W}:${H}:force_original_aspect_ratio=decrease,` +
+        `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${fps}`;
+      const effectFilter = c.effect && effectFilterFor(c.effect);
+      if (effectFilter) vChain += ',' + effectFilter;
+      if (c.chromaKey && c.chromaKey.enabled) vChain += ',format=rgba,' + chromaKeyFilterFor(c.chromaKey);
+      if (c.mask && c.mask.type && c.mask.type !== 'none') vChain += ',format=rgba,' + maskFilterFor(c.mask);
+      if (c.opacity != null && c.opacity < 0.999) {
+        const op = Math.max(0, Math.min(1, c.opacity));
+        vChain += `,colorchannelmixer=rr=${op}:gg=${op}:bb=${op}`;
+      }
+      vChain += ',format=yuv420p';
       filterParts.push(`${vChain}[${vLabel}]`);
       filterParts.push(`[${silenceIdx}:a]anull[${aLabel}]`);
     } else {
       args.push('-i', c.path);
       const idx = inputIdx++;
       let vChain = `[${idx}:v]trim=start=${c.inPoint.toFixed(3)}:end=${c.outPoint.toFixed(3)},setpts=PTS-STARTPTS,` +
-        `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=30`;
+        `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${fps}`;
       let aChain = `[${idx}:a]atrim=start=${c.inPoint.toFixed(3)}:end=${c.outPoint.toFixed(3)},asetpts=PTS-STARTPTS`;
 
       const effectFilter = c.effect && effectFilterFor(c.effect);
       if (effectFilter) vChain += ',' + effectFilter;
-      if (c.chromaKey && c.chromaKey.enabled) vChain += ',' + chromaKeyFilterFor(c.chromaKey);
-      if (c.mask && c.mask.type && c.mask.type !== 'none') vChain += ',' + maskFilterFor(c.mask);
+      if (c.chromaKey && c.chromaKey.enabled) vChain += ',format=rgba,' + chromaKeyFilterFor(c.chromaKey);
+      if (c.mask && c.mask.type && c.mask.type !== 'none') vChain += ',format=rgba,' + maskFilterFor(c.mask);
       if (c.opacity != null && c.opacity < 0.999) {
         const op = Math.max(0, Math.min(1, c.opacity));
         vChain += `,colorchannelmixer=rr=${op}:gg=${op}:bb=${op}`;
       }
+      vChain += ',format=yuv420p';
       if (c.volume) aChain += `,volume=${Math.pow(10, c.volume / 20).toFixed(4)}`;
 
       const prev = clips[i - 1];
@@ -703,7 +851,15 @@ function buildExportArgs(outputPath) {
 
   args.push('-filter_complex', filterParts.join(';'));
   args.push('-map', '[outv]', '-map', '[outa]');
-  args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p');
+
+  const bitrateKbps = state.exportSettings.bitrateKbps;
+  if (bitrateKbps) {
+    args.push('-c:v', 'libx264', '-preset', 'veryfast',
+      '-b:v', `${bitrateKbps}k`, '-maxrate', `${bitrateKbps}k`, '-bufsize', `${bitrateKbps * 2}k`, '-pix_fmt', 'yuv420p');
+  } else {
+    const crf = QUALITY_CRF[state.exportSettings.quality] || QUALITY_CRF.high;
+    args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(crf), '-pix_fmt', 'yuv420p');
+  }
   args.push('-c:a', 'aac', '-b:a', '160k');
   args.push(outputPath);
   return args;
@@ -785,6 +941,8 @@ window.addEventListener('DOMContentLoaded', () => {
     seekGlobal(0);
   }
 
+  Native().getSystemFontPath().then((res) => { if (res && res.path) state.fontPath = res.path; }).catch(() => {});
+
   document.getElementById('btn-import-home').addEventListener('click', importClips);
   document.getElementById('tool-add').addEventListener('click', openAddSheet);
   document.getElementById('tool-split').addEventListener('click', splitSelectedAtPlayhead);
@@ -794,6 +952,7 @@ window.addEventListener('DOMContentLoaded', () => {
     if (idx === -1 || idx >= state.clips.length - 1) { showToast('Select a clip that has another clip after it'); return; }
     openTransitionSheet(state.clips[idx]);
   });
+  document.getElementById('tool-settings').addEventListener('click', openSettingsSheet);
   document.getElementById('tool-export').addEventListener('click', exportProject);
 
   document.getElementById('btn-playpause').addEventListener('click', () => {
@@ -825,6 +984,15 @@ window.addEventListener('DOMContentLoaded', () => {
   // Text sheet
   document.getElementById('text-sheet-add').addEventListener('click', submitTextSheet);
 
+  // Settings sheet
+  document.getElementById('settings-quality').addEventListener('change', (e) => { state.exportSettings.quality = e.target.value; persist(); });
+  document.getElementById('settings-framerate').addEventListener('change', (e) => { state.exportSettings.framerate = Number(e.target.value); persist(); });
+  document.getElementById('settings-bitrate').addEventListener('change', (e) => {
+    state.exportSettings.bitrateKbps = e.target.value === 'auto' ? null : Number(e.target.value);
+    persist();
+  });
+  document.getElementById('settings-done-btn').addEventListener('click', closeAllSheets);
+
   // Properties sheet tabs
   document.querySelectorAll('.props-tab').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -834,5 +1002,6 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  wireTimelineScrub();
   renderTimeline();
 });

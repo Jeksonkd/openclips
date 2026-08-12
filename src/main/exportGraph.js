@@ -6,6 +6,10 @@ const { ffmpegPath } = require('./ffmpegEngine');
 
 let currentProc = null;
 
+// Export Settings modal. Lower CRF = higher quality/larger file; ignored
+// when an explicit bitrate is set instead (see buildFilterGraph).
+const QUALITY_CRF = { low: 28, medium: 23, high: 19, max: 15 };
+
 function esc(v) {
   // Escape a literal value for use inside an ffmpeg filter expression
   // (commas and colons are argument separators in the filtergraph string).
@@ -483,7 +487,8 @@ function buildFilterGraph(project, outputPath) {
   const tracks = project.timeline.tracks || [];
   const W = (project.canvas && project.canvas.width) || 1920;
   const H = (project.canvas && project.canvas.height) || 1080;
-  const FPS = (project.canvas && project.canvas.fps) || 30;
+  const exportSettings = project.exportSettings || {};
+  const FPS = exportSettings.framerate || (project.canvas && project.canvas.fps) || 30;
 
   let totalDuration = 0.01;
   for (const track of tracks) {
@@ -760,7 +765,13 @@ function buildFilterGraph(project, outputPath) {
   args.push('-filter_complex', filterLines.join(';'));
   args.push('-map', '[outv]', '-map', `[${audioMap}]`);
   args.push('-t', totalDuration.toFixed(3));
-  args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '19', '-pix_fmt', 'yuv420p');
+  if (exportSettings.bitrateKbps) {
+    const kbps = exportSettings.bitrateKbps;
+    args.push('-c:v', 'libx264', '-preset', 'veryfast', '-b:v', `${kbps}k`, '-maxrate', `${kbps}k`, '-bufsize', `${kbps * 2}k`, '-pix_fmt', 'yuv420p');
+  } else {
+    const crf = QUALITY_CRF[exportSettings.quality] || QUALITY_CRF.high;
+    args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(crf), '-pix_fmt', 'yuv420p');
+  }
   args.push('-c:a', 'aac', '-b:a', '192k');
   args.push('-y', outputPath);
 

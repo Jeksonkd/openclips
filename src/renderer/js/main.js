@@ -19,6 +19,15 @@ window.addEventListener('DOMContentLoaded', () => {
   window.canvasOverlay.update();
   window.addEventListener('resize', () => window.canvasOverlay.update());
 
+  // Structural edits (add/delete/split a clip, add a track, apply a
+  // transition...) didn't refresh the preview canvas on their own - only
+  // scrubbing/playback did, via time:changed. If the playhead happened to
+  // sit over whatever you just added or removed, the canvas kept showing
+  // whatever was there before until you nudged the scrubber.
+  project.on('tracks:changed', () => {
+    window.previewEngine.renderFrame(project.timeline.currentTime, project.isPlaying);
+  });
+
   // Transport controls
   const playBtn = document.getElementById('btn-playpause');
   playBtn.addEventListener('click', () => {

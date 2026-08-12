@@ -415,6 +415,8 @@ button.toggled { background: var(--accent-dim); border-color: var(--accent); }
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; z-index: 50; }
 .modal.hidden { display: none; }
 .modal-box { background: var(--bg-1); border: 1px solid var(--line); border-radius: 8px; padding: 20px; width: 340px; }
+.modal-box h3 { margin: 0 0 14px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 .progress-track { height: 8px; background: var(--bg-2); border-radius: 4px; margin: 12px 0; overflow: hidden; }
 .progress-fill { height: 100%; width: 0%; background: var(--accent); }
 #export-status { color: var(--text-1); margin-bottom: 12px; font-size: 11px; }

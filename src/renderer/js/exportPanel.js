@@ -1,10 +1,31 @@
 function setupExportPanel() {
   const modal = document.getElementById('export-modal');
+  const settingsModal = document.getElementById('export-settings-modal');
   const fill = document.getElementById('export-progress-fill');
   const status = document.getElementById('export-status');
   let unsub = null;
 
-  document.getElementById('btn-export').addEventListener('click', async () => {
+  const qualitySelect = document.getElementById('es-quality');
+  const framerateSelect = document.getElementById('es-framerate');
+  const bitrateSelect = document.getElementById('es-bitrate');
+
+  document.getElementById('btn-export').addEventListener('click', () => {
+    qualitySelect.value = project.exportSettings.quality;
+    framerateSelect.value = String(project.exportSettings.framerate);
+    bitrateSelect.value = project.exportSettings.bitrateKbps ? String(project.exportSettings.bitrateKbps) : 'auto';
+    settingsModal.classList.remove('hidden');
+  });
+
+  document.getElementById('export-settings-cancel').addEventListener('click', () => {
+    settingsModal.classList.add('hidden');
+  });
+
+  document.getElementById('export-settings-continue').addEventListener('click', async () => {
+    project.exportSettings.quality = qualitySelect.value;
+    project.exportSettings.framerate = Number(framerateSelect.value);
+    project.exportSettings.bitrateKbps = bitrateSelect.value === 'auto' ? null : Number(bitrateSelect.value);
+    settingsModal.classList.add('hidden');
+
     const outputPath = await window.engine.exportLocationDialog('export.mp4');
     if (!outputPath) return;
 

@@ -80,6 +80,9 @@ class ProjectState {
       tracks: [1, 2, 3, 4, 5].map((n) => makeTrack(`Track ${n}`)),
     };
     this.canvas = { width: 1280, height: 720, fps: 30 };
+    // quality maps to a CRF value; bitrateKbps null means "auto" (use the
+    // quality/CRF setting instead of an explicit bitrate).
+    this.exportSettings = { quality: 'high', framerate: 30, bitrateKbps: null };
     this.selectedClipId = null;
     this.isPlaying = false;
     this._listeners = {};
@@ -293,6 +296,7 @@ class ProjectState {
       media: this.media,
       timeline: this.timeline,
       canvas: this.canvas,
+      exportSettings: this.exportSettings,
     };
   }
 
@@ -300,6 +304,7 @@ class ProjectState {
     this.media = data.media || {};
     this.timeline = data.timeline || { currentTime: 0, zoomLevel: 80, tracks: [] };
     this.canvas = data.canvas || { width: 1280, height: 720, fps: 30 };
+    this.exportSettings = data.exportSettings || { quality: 'high', framerate: 30, bitrateKbps: null };
     this.selectedClipId = null;
     this.emit('media:changed');
     this.emit('tracks:changed');
