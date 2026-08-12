@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>OpenCut</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <div class="brand">OpenCut</div>
+    <div class="topbar-actions">
+      <button id="btn-new">New</button>
+      <button id="btn-open">Open</button>
+      <button id="btn-save">Save</button>
+      <span class="sep"></span>
+      <button id="btn-export" class="primary">Export</button>
+    </div>
+  </header>
+
+  <div id="workspace">
+
+    <section id="panel-assets" class="panel">
+      <div class="panel-header">
+        <span>Media</span>
+        <button id="btn-import" title="Import media">+ Import</button>
+      </div>
+      <div id="asset-list" class="asset-list"></div>
+    </section>
+
+    <section id="panel-preview" class="panel">
+      <div class="preview-wrap">
+        <canvas id="preview-canvas" width="1280" height="720"></canvas>
+        <div id="xform-box" class="xform-box" style="display:none">
+          <div class="xform-rotate-line"></div>
+          <div class="xform-handle rotate" data-handle="rotate"></div>
+          <div class="xform-handle nw" data-handle="nw"></div>
+          <div class="xform-handle ne" data-handle="ne"></div>
+          <div class="xform-handle sw" data-handle="sw"></div>
+          <div class="xform-handle se" data-handle="se"></div>
+        </div>
+      </div>
+      <div id="transport">
+        <button id="btn-playpause">▶</button>
+        <span id="time-readout">00:00:00 / 00:00:00</span>
+        <input id="scrub" type="range" min="0" max="1000" value="0" />
+      </div>
+    </section>
+
+    <section id="panel-inspector" class="panel">
+      <div class="panel-header"><span>Inspector</span></div>
+      <div id="inspector-empty" class="inspector-empty">Select a clip to edit its properties.</div>
+      <div id="inspector-body" class="inspector-body" style="display:none">
+        <div class="tabs" id="inspector-tabs">
+          <button class="tab active" data-tab="transform">Transform</button>
+          <button class="tab" data-tab="animate">Animate</button>
+          <button class="tab" data-tab="effect">Effect</button>
+          <button class="tab" data-tab="blend">Mask &amp; Blend</button>
+          <button class="tab" data-tab="text">Text</button>
+          <button class="tab" data-tab="speed">Speed</button>
+          <button class="tab" data-tab="audio">Audio</button>
+          <button class="tab" data-tab="adjust">Adjust</button>
+          <button class="tab" data-tab="advanced">Advanced</button>
+        </div>
+        <div class="tab-panes" id="inspector-panes"></div>
+      </div>
+    </section>
+
+    <section id="panel-timeline" class="panel">
+      <div class="timeline-toolbar">
+        <button id="tl-split" title="Split at playhead">✂ Split</button>
+        <button id="tl-delete" title="Delete selected clip">🗑 Delete</button>
+        <button id="tl-set-keyframe" title="Set a keyframe on the selected clip at the playhead">◆ Keyframe</button>
+        <span class="sep"></span>
+        <button id="tl-add-track">+ Track</button>
+        <button id="tl-add-text">+ Text</button>
+        <button id="tl-add-adjustment">+ Adjustment Layer</button>
+        <button id="tl-add-effect">+ Effect</button>
+        <span class="sep"></span>
+        <label class="zoom-label">Zoom</label>
+        <input id="tl-zoom" type="range" min="10" max="400" value="80" />
+      </div>
+      <div class="timeline-scroll" id="timeline-scroll">
+        <div class="timeline-ruler" id="timeline-ruler"></div>
+        <div class="timeline-tracks" id="timeline-tracks"></div>
+        <div class="timeline-playhead" id="timeline-playhead"></div>
+      </div>
+    </section>
+
+  </div>
+
+  <div id="export-modal" class="modal hidden">
+    <div class="modal-box">
+      <h3>Exporting...</h3>
+      <div class="progress-track"><div class="progress-fill" id="export-progress-fill"></div></div>
+      <div id="export-status">Starting ffmpeg…</div>
+      <button id="export-cancel">Cancel</button>
+    </div>
+  </div>
+
+</div>
+
+<script src="js/state.js"></script>
+<script src="js/history.js"></script>
+<script src="js/keyframes.js"></script>
+<script src="js/colorPipeline.js"></script>
+<script src="js/preview.js"></script>
+<script src="js/canvasOverlay.js"></script>
+<script src="js/assetPanel.js"></script>
+<script src="js/timeline.js"></script>
+<script src="js/inspector.js"></script>
+<script src="js/exportPanel.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
