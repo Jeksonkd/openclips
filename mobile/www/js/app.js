@@ -1,34 +1,37 @@
-// OpenClips mobile - a scoped-down CapCut-style companion editor.
-// State is intentionally much simpler than the desktop app: one linear
-// sequence of clips (no multi-track compositing). Media clips (video or
-// image) can carry a simple effect, green screen, and/or a static
-// rect/ellipse mask; text clips are their own solid-color segments in the
-// same sequence (not an overlay on top of video - see README for why).
-// Persisted to localStorage on every change: Android can recreate the
-// whole Activity (and wipe all JS state) when the system reclaims memory
-// while a heavy external activity like the document picker is in front of
-// it - that's the most likely explanation for "adding more media doesn't
-// work after the first time", since the result would come back to a
-// freshly-reloaded page with no memory of anything.
+// OpenClips mobile - CapCut-style multi-track companion editor.
+// Multi-track model: state.tracks is an array of {id, name, muted, clips}.
+// Track array index 0 is the BOTTOM/backmost layer; later tracks composite
+// on top of earlier ones (both here and in exportGraph.js) - the timeline
+// UI renders tracks in reverse array order so the visual stacking (top of
+// the lane list = frontmost) matches standard NLE convention. Clips carry
+// an explicit `startTime` (absolute, track-local composite time) instead of
+// the old flat model's implicit sequential position, so clips can overlap
+// (for transitions) or sit on different tracks (for overlays/text-over-
+// video/picture-in-picture-ish use).
+// The actual ffmpeg filter-graph construction lives in exportGraph.js (a
+// separate, DOM-free module so it's Node-testable) - this file owns state,
+// the timeline/preview UI, and wiring only.
+//
+// Persisted to localStorage on every change: Android can recreate the whole
+// Activity (and wipe all JS state) when the system reclaims memory while a
+// heavy external activity like the document picker is in front of it.
+
+const G = window.OpenClipsExportGraph;
 
 const state = {
-  clips: [], // see makeMediaClip/makeTextClip below for shape
+  tracks: [],
   selectedClipId: null,
+  activeTrackId: null,
   currentTime: 0,
   isPlaying: false,
-  activeVideoPath: null,
-  exportSettings: { quality: 'high', framerate: 30, bitrateKbps: null }, // bitrateKbps null = "auto" (CRF-based)
-  fontPath: null, // fetched once from native at startup, used by text clip export
+  exportSettings: { quality: 'high', framerate: 30, bitrateKbps: null },
+  fontPath: null,
 };
 
-const FADE_DUR = 0.5;
 const PX_PER_SEC = 44;
-const STORAGE_KEY = 'openclips_project_v1';
-const EFFECT_CHOICES = [
-  ['none', 'None', '∅'], ['blur', 'Blur', '◌'], ['bw', 'B & W', '◑'],
-  ['invert', 'Invert', '◒'], ['sepia', 'Sepia', '◓'],
-];
-const QUALITY_CRF = { low: 30, medium: 25, high: 21, max: 17 };
+const LANE_HEIGHT = 60;
+const LANE_GAP = 6;
+const STORAGE_KEY = 'openclips_project_v2';
 
 function uid() { return 'c' + Math.random().toString(36).slice(2) + Date.now().toString(36); }
 function Native() { return window.Capacitor.Plugins.OpenClipsNative; }
@@ -39,33 +42,7 @@ function fmtTime(t) {
   const s = Math.floor(t % 60);
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
-
-function makeMediaClip(c) {
-  const isImage = c.type === 'image';
-  const duration = isImage ? 5 : c.duration;
-  return {
-    id: uid(), kind: 'media', type: isImage ? 'image' : 'video',
-    path: c.path, name: c.name, duration, width: c.width, height: c.height,
-    inPoint: 0, outPoint: duration,
-    thumbPath: isImage ? c.path : null, transitionAfter: 'none',
-    volume: 0, opacity: 1,
-    effect: { type: 'none', amount: 50 },
-    mask: { type: 'none', posX: 0.5, posY: 0.5, sizeX: 0.3, sizeY: 0.3, invert: false },
-    // Green screen. Unlike desktop, keyed-out pixels here just go black
-    // (see maskFilterFor's comment - same reason: no layers to reveal).
-    chromaKey: { enabled: false, color: '#00ff00', density: 50, shadows: 50 },
-  };
-}
-function makeTextClip(content, color) {
-  return {
-    id: uid(), kind: 'text', name: 'Text: ' + content.slice(0, 20),
-    duration: 3, inPoint: 0, outPoint: 3, transitionAfter: 'none',
-    text: { content, color: color || '#ffffff' },
-  };
-}
-
-function clipDuration(c) { return Math.max(0.05, c.outPoint - c.inPoint); }
-function totalDuration() { return state.clips.reduce((sum, c) => sum + clipDuration(c), 0); }
+function clipDuration(c) { return G.clipDuration(c); }
 
 function showToast(msg) {
   const el = document.getElementById('toast');
@@ -75,25 +52,152 @@ function showToast(msg) {
   showToast._t = setTimeout(() => el.classList.add('hidden'), 2600);
 }
 
+// ---- tracks ----
+function newTrack(name) {
+  return { id: uid(), name: name || `Track ${state.tracks.length + 1}`, muted: false, clips: [] };
+}
+function ensureTracks() {
+  if (state.tracks.length === 0) {
+    const t = newTrack('Track 1');
+    state.tracks.push(t);
+    state.activeTrackId = t.id;
+  }
+  if (!state.tracks.find((t) => t.id === state.activeTrackId)) state.activeTrackId = state.tracks[0].id;
+}
+function activeTrack() { ensureTracks(); return state.tracks.find((t) => t.id === state.activeTrackId); }
+function addTrack() {
+  const t = newTrack();
+  state.tracks.push(t);
+  state.activeTrackId = t.id;
+  renderTrackControls();
+  renderTimeline();
+  persist();
+}
+function removeTrack(id) {
+  if (state.tracks.length <= 1) { showToast('Keep at least one track'); return; }
+  const idx = state.tracks.findIndex((t) => t.id === id);
+  if (idx === -1) return;
+  const removedClipIds = new Set(state.tracks[idx].clips.map((c) => c.id));
+  state.tracks.splice(idx, 1);
+  if (state.selectedClipId && removedClipIds.has(state.selectedClipId)) state.selectedClipId = null;
+  ensureTracks();
+  syncPreviewLayers();
+  renderTrackControls();
+  renderTimeline();
+  seekGlobal(state.currentTime);
+  persist();
+}
+function toggleTrackMute(id) {
+  const t = state.tracks.find((tr) => tr.id === id);
+  if (!t) return;
+  t.muted = !t.muted;
+  renderTrackControls();
+  syncPreviewLayers();
+  seekGlobal(state.currentTime);
+  persist();
+}
+
+function totalDuration() {
+  let max = 0;
+  for (const t of state.tracks) {
+    for (const c of t.clips) max = Math.max(max, c.startTime + clipDuration(c));
+  }
+  return max;
+}
+
+function findClip(id) {
+  for (const t of state.tracks) {
+    const c = t.clips.find((cl) => cl.id === id);
+    if (c) return c;
+  }
+  return null;
+}
+function findTrackOfClip(id) {
+  return state.tracks.find((t) => t.clips.some((c) => c.id === id)) || null;
+}
+
+// ---- clip factories ----
+function makeMediaClip(c, startTime) {
+  const isImage = c.type === 'image';
+  const duration = isImage ? 5 : c.duration;
+  return {
+    id: uid(), kind: 'media', type: isImage ? 'image' : 'video',
+    path: c.path, name: c.name, duration, width: c.width, height: c.height,
+    inPoint: 0, outPoint: duration, startTime,
+    thumbPath: isImage ? c.path : null,
+    volume: 0, opacity: 1, blendMode: 'normal',
+    effect: { type: 'none', amount: 50 },
+    adjustments: {},
+    mask: { type: 'none', posX: 0.5, posY: 0.5, sizeX: 0.3, sizeY: 0.3, invert: false },
+    chromaKey: { enabled: false, color: '#00ff00', density: 50, shadows: 50 },
+    animIn: { type: 'none', duration: 0.6 },
+  };
+}
+function makeTextClip(content, color, startTime) {
+  return {
+    id: uid(), kind: 'text', name: 'Text: ' + content.slice(0, 20),
+    duration: 3, inPoint: 0, outPoint: 3, startTime,
+    text: { content, color: color || '#ffffff' },
+    animIn: { type: 'none', duration: 0.6 },
+  };
+}
+
 // ---- persistence ----
 function persist() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      clips: state.clips, selectedClipId: state.selectedClipId, exportSettings: state.exportSettings,
+      tracks: state.tracks, selectedClipId: state.selectedClipId, activeTrackId: state.activeTrackId,
+      exportSettings: state.exportSettings,
     }));
   } catch (e) { /* storage full or unavailable - not fatal, just no restore */ }
 }
+
+// Migrates the old single-sequence localStorage format (state.clips) to the
+// new tracks[] shape, so upgrading the app doesn't wipe an in-progress edit.
+function migrateOldFormat(data) {
+  const track = newTrack('Track 1');
+  let t = 0;
+  for (const oldClip of data.clips) {
+    const dur = (oldClip.outPoint - oldClip.inPoint);
+    const clip = Object.assign({}, oldClip, {
+      startTime: t, opacity: oldClip.opacity == null ? 1 : oldClip.opacity,
+      blendMode: 'normal', adjustments: oldClip.adjustments || {},
+      animIn: { type: 'none', duration: 0.6 },
+    });
+    delete clip.transitionAfter;
+    track.clips.push(clip);
+    t += dur;
+  }
+  return [track];
+}
+
 function restore() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return false;
-    const data = JSON.parse(raw);
-    if (!data.clips || data.clips.length === 0) return false;
-    state.clips = data.clips;
-    state.selectedClipId = data.selectedClipId || null;
-    if (data.exportSettings) state.exportSettings = data.exportSettings;
-    return true;
-  } catch (e) { return false; }
+    if (raw) {
+      const data = JSON.parse(raw);
+      if (data.tracks && data.tracks.length) {
+        state.tracks = data.tracks;
+        state.selectedClipId = data.selectedClipId || null;
+        state.activeTrackId = data.activeTrackId || null;
+        if (data.exportSettings) state.exportSettings = data.exportSettings;
+        ensureTracks();
+        return true;
+      }
+    }
+    const oldRaw = localStorage.getItem('openclips_project_v1');
+    if (oldRaw) {
+      const data = JSON.parse(oldRaw);
+      if (data.clips && data.clips.length) {
+        state.tracks = migrateOldFormat(data);
+        if (data.exportSettings) state.exportSettings = data.exportSettings;
+        ensureTracks();
+        persist();
+        return true;
+      }
+    }
+  } catch (e) { /* ignore, start fresh */ }
+  return false;
 }
 
 // ---- screens ----
@@ -102,10 +206,7 @@ function showEditor() {
   document.getElementById('editor-screen').classList.remove('hidden');
 }
 
-// ---- generic sheet helpers (each sheet owns its own option clicks - a
-// single shared listener across all .sheet-option elements was the bug
-// that made picking a Media/Text/Effect option also fire the Transition
-// sheet's handler and vice versa) ----
+// ---- generic sheet helpers ----
 function closeAllSheets() {
   document.getElementById('sheet-backdrop').classList.add('hidden');
   document.querySelectorAll('.sheet').forEach((s) => s.classList.add('hidden'));
@@ -127,12 +228,20 @@ async function importClips() {
   }
   const picked = (result && result.clips) || [];
   if (picked.length === 0) return;
-  const newClips = picked.map(makeMediaClip);
-  state.clips.push(...newClips);
+  const track = activeTrack();
+  let t = track.clips.reduce((max, c) => Math.max(max, c.startTime + clipDuration(c)), 0);
+  const newClips = [];
+  for (const c of picked) {
+    const clip = makeMediaClip(c, t);
+    t += clipDuration(clip);
+    track.clips.push(clip);
+    newClips.push(clip);
+  }
   showEditor();
+  syncPreviewLayers();
   renderTimeline();
   selectClip(newClips[0].id);
-  seekGlobal(clipStartTime(newClips[0].id));
+  seekGlobal(newClips[0].startTime);
   persist();
   for (const c of newClips) {
     if (c.type === 'video') generateThumbFor(c.path, 'video');
@@ -142,7 +251,7 @@ async function importClips() {
 async function generateThumbFor(path, type) {
   try {
     const res = await Native().generateThumbnail({ path, atSeconds: 0.1, type });
-    const clip = state.clips.find((c) => c.kind === 'media' && c.path === path);
+    const clip = state.tracks.flatMap((t) => t.clips).find((c) => c.kind === 'media' && c.path === path);
     if (clip && res && res.path) {
       clip.thumbPath = res.path;
       renderTimeline();
@@ -154,80 +263,149 @@ async function generateThumbFor(path, type) {
 // ---- selection ----
 function selectClip(id) {
   state.selectedClipId = id;
+  const track = findTrackOfClip(id);
+  if (track) state.activeTrackId = track.id;
   renderTimeline();
+  renderTrackControls();
   persist();
 }
 
-function findClip(id) { return state.clips.find((c) => c.id === id); }
-function clipIndex(id) { return state.clips.findIndex((c) => c.id === id); }
+// ---- track controls (chip row above the timeline) ----
+function renderTrackControls() {
+  ensureTracks();
+  const row = document.getElementById('track-controls');
+  row.innerHTML = '';
+  // Reverse order: topmost-compositing track (last in the array) shown first/left.
+  const ordered = state.tracks.slice().reverse();
+  ordered.forEach((t) => {
+    const chip = document.createElement('div');
+    chip.className = 'track-chip' + (t.id === state.activeTrackId ? ' active' : '') + (t.muted ? ' muted' : '');
+    const label = document.createElement('span');
+    label.className = 'track-chip-label';
+    label.textContent = t.name;
+    chip.appendChild(label);
+    chip.addEventListener('click', () => { state.activeTrackId = t.id; renderTrackControls(); });
 
-function clipStartTime(id) {
-  let t = 0;
-  for (const c of state.clips) {
-    if (c.id === id) return t;
-    t += clipDuration(c);
-  }
-  return t;
+    const muteBtn = document.createElement('button');
+    muteBtn.className = 'track-chip-btn';
+    muteBtn.textContent = t.muted ? '🔇' : '🔊';
+    muteBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleTrackMute(t.id); });
+    chip.appendChild(muteBtn);
+
+    if (state.tracks.length > 1) {
+      const delBtn = document.createElement('button');
+      delBtn.className = 'track-chip-btn';
+      delBtn.textContent = '✕';
+      delBtn.addEventListener('click', (e) => { e.stopPropagation(); removeTrack(t.id); });
+      chip.appendChild(delBtn);
+    }
+    row.appendChild(chip);
+  });
+
+  const addBtn = document.createElement('button');
+  addBtn.className = 'track-chip add-track-btn';
+  addBtn.textContent = '+ Track';
+  addBtn.addEventListener('click', addTrack);
+  row.appendChild(addBtn);
 }
 
 // ---- timeline rendering ----
+function laneHeightTotal() { return state.tracks.length * LANE_HEIGHT + (state.tracks.length - 1) * LANE_GAP; }
+
 function renderTimeline() {
-  const track = document.getElementById('timeline-track');
-  track.innerHTML = '';
-  state.clips.forEach((clip, i) => {
-    const el = document.createElement('div');
-    const isText = clip.kind === 'text';
-    el.className = 'tl-clip' + (isText ? ' text-clip' : '') + (clip.id === state.selectedClipId ? ' selected' : '');
-    el.style.width = Math.max(20, clipDuration(clip) * PX_PER_SEC) + 'px';
-    if (!isText && clip.thumbPath) el.style.backgroundImage = `url("${toFileSrc(clip.thumbPath)}")`;
-    el.dataset.clipId = clip.id;
+  ensureTracks();
+  const container = document.getElementById('timeline-tracks');
+  container.innerHTML = '';
+  container.style.height = laneHeightTotal() + 'px';
+  const widthPx = Math.max(200, totalDuration() * PX_PER_SEC + 100);
+  container.style.width = widthPx + 'px';
 
-    if (isText) {
-      const preview = document.createElement('div');
-      preview.className = 'tl-clip-text-preview';
-      preview.textContent = clip.text.content;
-      el.appendChild(preview);
-    } else {
-      const name = document.createElement('div');
-      name.className = 'tl-clip-name';
-      name.textContent = clip.name;
-      el.appendChild(name);
-      if ((clip.effect && clip.effect.type !== 'none') || (clip.mask && clip.mask.type !== 'none') || (clip.chromaKey && clip.chromaKey.enabled)) {
-        const badge = document.createElement('div');
-        badge.className = 'tl-clip-badge';
-        badge.textContent = '✦';
-        el.appendChild(badge);
+  // Reverse order: last array entry (frontmost in compositing) drawn as the top lane.
+  const ordered = state.tracks.slice().reverse();
+  ordered.forEach((track, displayIdx) => {
+    const lane = document.createElement('div');
+    lane.className = 'tl-lane' + (track.id === state.activeTrackId ? ' active-lane' : '');
+    lane.style.top = (displayIdx * (LANE_HEIGHT + LANE_GAP)) + 'px';
+    lane.style.width = widthPx + 'px';
+    lane.dataset.trackId = track.id;
+    lane.addEventListener('pointerdown', (e) => {
+      if (e.target === lane) { state.activeTrackId = track.id; renderTrackControls(); renderTimeline(); }
+    });
+
+    const sortedClips = track.clips.slice().sort((a, b) => a.startTime - b.startTime);
+    sortedClips.forEach((clip) => {
+      const el = document.createElement('div');
+      const isText = clip.kind === 'text';
+      el.className = 'tl-clip' + (isText ? ' text-clip' : '') + (clip.id === state.selectedClipId ? ' selected' : '');
+      el.style.left = (clip.startTime * PX_PER_SEC) + 'px';
+      el.style.width = Math.max(20, clipDuration(clip) * PX_PER_SEC) + 'px';
+      if (!isText && clip.thumbPath) el.style.backgroundImage = `url("${toFileSrc(clip.thumbPath)}")`;
+      el.dataset.clipId = clip.id;
+
+      if (isText) {
+        const preview = document.createElement('div');
+        preview.className = 'tl-clip-text-preview';
+        preview.textContent = clip.text.content;
+        el.appendChild(preview);
+      } else {
+        const name = document.createElement('div');
+        name.className = 'tl-clip-name';
+        name.textContent = clip.name;
+        el.appendChild(name);
+        if ((clip.effect && clip.effect.type !== 'none') || (clip.mask && clip.mask.type !== 'none') ||
+            (clip.chromaKey && clip.chromaKey.enabled) || (clip.blendMode && clip.blendMode !== 'normal') ||
+            hasAdjustments(clip)) {
+          const badge = document.createElement('div');
+          badge.className = 'tl-clip-badge';
+          badge.textContent = '✦';
+          el.appendChild(badge);
+        }
       }
-    }
 
-    let leftHandle = null, rightHandle = null;
-    if (!isText && clip.type !== 'image') {
-      leftHandle = document.createElement('div');
-      leftHandle.className = 'tl-handle left';
-      rightHandle = document.createElement('div');
-      rightHandle.className = 'tl-handle right';
-      el.appendChild(leftHandle);
-      el.appendChild(rightHandle);
-      wireTrimHandle(leftHandle, clip, 'in');
-      wireTrimHandle(rightHandle, clip, 'out');
-    }
+      let leftHandle = null, rightHandle = null;
+      if (!isText && clip.type !== 'image') {
+        leftHandle = document.createElement('div');
+        leftHandle.className = 'tl-handle left';
+        rightHandle = document.createElement('div');
+        rightHandle.className = 'tl-handle right';
+        el.appendChild(leftHandle);
+        el.appendChild(rightHandle);
+        wireTrimHandle(leftHandle, clip, 'in');
+        wireTrimHandle(rightHandle, clip, 'out');
+      }
 
-    wireClipDrag(el, clip, leftHandle, rightHandle);
+      if (clip.animIn && clip.animIn.type !== 'none') {
+        const tBadge = document.createElement('div');
+        tBadge.className = 'tl-transition-flag';
+        tBadge.textContent = '◐';
+        el.appendChild(tBadge);
+      }
 
-    track.appendChild(el);
+      wireClipDrag(el, clip, leftHandle, rightHandle);
+      lane.appendChild(el);
 
-    if (i < state.clips.length - 1) {
-      const btn = document.createElement('div');
-      btn.className = 'tl-transition-btn' + (clip.transitionAfter !== 'none' ? ' active' : '');
-      btn.textContent = clip.transitionAfter === 'fade' ? '◐' : '+';
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        openTransitionSheet(clip);
-      });
-      track.appendChild(btn);
-    }
+      // Sibling of the clip (not a child) - .tl-clip clips its own overflow
+      // for thumbnail cropping, which would clip this button's negative
+      // left offset if it were nested inside.
+      const transitionBtn = document.createElement('div');
+      transitionBtn.className = 'tl-transition-btn' + (clip.animIn && clip.animIn.type !== 'none' ? ' active' : '');
+      transitionBtn.textContent = '+';
+      transitionBtn.style.left = (clip.startTime * PX_PER_SEC - 11) + 'px';
+      transitionBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+      transitionBtn.addEventListener('click', (e) => { e.stopPropagation(); openTransitionSheet(clip); });
+      lane.appendChild(transitionBtn);
+    });
+
+    container.appendChild(lane);
   });
+
   document.getElementById('time-readout').textContent = `${fmtTime(state.currentTime)} / ${fmtTime(totalDuration())}`;
+}
+
+function hasAdjustments(clip) {
+  const a = clip.adjustments;
+  if (!a) return false;
+  return Object.keys(a).some((k) => a[k]);
 }
 
 function wireTrimHandle(handleEl, clip, side) {
@@ -238,10 +416,12 @@ function wireTrimHandle(handleEl, clip, side) {
     const startX = e.clientX;
     const origIn = clip.inPoint;
     const origOut = clip.outPoint;
+    const origStart = clip.startTime;
     const onMove = (ev) => {
       const dtSec = (ev.clientX - startX) / PX_PER_SEC;
       if (side === 'in') {
         clip.inPoint = Math.min(origOut - 0.1, Math.max(0, origIn + dtSec));
+        clip.startTime = origStart + (clip.inPoint - origIn);
       } else {
         clip.outPoint = Math.max(origIn + 0.1, Math.min(clip.duration, origOut + dtSec));
       }
@@ -250,7 +430,7 @@ function wireTrimHandle(handleEl, clip, side) {
     const onUp = () => {
       handleEl.removeEventListener('pointermove', onMove);
       handleEl.removeEventListener('pointerup', onUp);
-      seekGlobal(clipStartTime(clip.id) + (side === 'in' ? 0 : clipDuration(clip)));
+      seekGlobal(clip.startTime);
       persist();
     };
     handleEl.addEventListener('pointermove', onMove);
@@ -258,50 +438,62 @@ function wireTrimHandle(handleEl, clip, side) {
   });
 }
 
-// Dragging the body of a clip (not its trim handles) reorders it - a short
-// move (a tap, or a small jitter) still counts as select+seek, only a real
-// drag past a small threshold triggers a reorder.
+// Dragging a clip's body moves it: horizontally changes startTime (free
+// positioning - clips are allowed to overlap, the later one on the same
+// track wins the overlap, same as export), vertically past a lane boundary
+// re-parents it onto that track. A short move (tap/jitter) still counts as
+// select+seek; only a real drag past a small threshold moves anything.
 function wireClipDrag(el, clip, leftHandle, rightHandle) {
   el.addEventListener('pointerdown', (e) => {
     if (e.target === leftHandle || e.target === rightHandle) return;
+    if (e.target.classList && e.target.classList.contains('tl-transition-btn')) return;
     el.setPointerCapture(e.pointerId);
-    const startX = e.clientX;
+    const startX = e.clientX, startY = e.clientY;
+    const origStart = clip.startTime;
+    const origTrackId = findTrackOfClip(clip.id).id;
     let dragging = false;
-    let placeholderIdx = clipIndex(clip.id);
 
     const onMove = (ev) => {
       const dx = ev.clientX - startX;
-      if (!dragging && Math.abs(dx) < 10) return;
+      const dy = ev.clientY - startY;
+      if (!dragging && Math.hypot(dx, dy) < 10) return;
       dragging = true;
       el.classList.add('dragging');
-      const track = document.getElementById('timeline-track');
-      const siblings = Array.from(track.querySelectorAll('.tl-clip')).filter((s) => s !== el);
-      const elRect = el.getBoundingClientRect();
-      const elCenter = elRect.left + elRect.width / 2 + dx;
-      let targetIdx = state.clips.length - 1;
-      for (let i = 0; i < siblings.length; i++) {
-        const r = siblings[i].getBoundingClientRect();
-        if (elCenter < r.left + r.width / 2) { targetIdx = clipIndex(siblings[i].dataset.clipId); break; }
-      }
-      placeholderIdx = targetIdx;
-      el.style.transform = `translateX(${dx}px)`;
+      el.style.transform = `translate(${dx}px, ${dy}px)`;
     };
-    const onUp = () => {
+    const onUp = (ev) => {
       el.removeEventListener('pointermove', onMove);
       el.removeEventListener('pointerup', onUp);
       el.style.transform = '';
       el.classList.remove('dragging');
       if (dragging) {
-        const fromIdx = clipIndex(clip.id);
-        if (fromIdx !== -1 && placeholderIdx !== fromIdx) {
-          state.clips.splice(fromIdx, 1);
-          state.clips.splice(placeholderIdx > fromIdx ? placeholderIdx - 1 : placeholderIdx, 0, clip);
-          renderTimeline();
-          persist();
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+        clip.startTime = Math.max(0, +(origStart + dx / PX_PER_SEC).toFixed(3));
+
+        const laneShift = Math.round(dy / (LANE_HEIGHT + LANE_GAP));
+        if (laneShift !== 0) {
+          // Lanes are displayed in reverse array order, so moving DOWN on
+          // screen means an earlier (lower z) track and vice versa.
+          const orderedIds = state.tracks.slice().reverse().map((t) => t.id);
+          const curDisplayIdx = orderedIds.indexOf(origTrackId);
+          const newDisplayIdx = Math.max(0, Math.min(orderedIds.length - 1, curDisplayIdx + laneShift));
+          const newTrackId = orderedIds[newDisplayIdx];
+          if (newTrackId !== origTrackId) {
+            const oldTrack = state.tracks.find((t) => t.id === origTrackId);
+            const newTrack = state.tracks.find((t) => t.id === newTrackId);
+            oldTrack.clips.splice(oldTrack.clips.indexOf(clip), 1);
+            newTrack.clips.push(clip);
+            state.activeTrackId = newTrackId;
+          }
         }
+        renderTimeline();
+        renderTrackControls();
+        seekGlobal(state.currentTime);
+        persist();
       } else {
         selectClip(clip.id);
-        seekGlobal(clipStartTime(clip.id));
+        seekGlobal(clip.startTime);
         openPropsSheet(clip);
       }
     };
@@ -310,14 +502,30 @@ function wireClipDrag(el, clip, leftHandle, rightHandle) {
   });
 }
 
-// ---- transition sheet ----
+// ---- transition sheet (the clip's own entry transition - the "+" badge) ----
 let transitionSheetClip = null;
 function openTransitionSheet(clip) {
   transitionSheetClip = clip;
-  const sheet = document.getElementById('transition-sheet');
-  sheet.querySelectorAll('.sheet-option').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.type === clip.transitionAfter);
+  const container = document.getElementById('transition-options');
+  container.innerHTML = '';
+  const currentType = (clip.animIn && clip.animIn.type) || 'none';
+  G.TRANSITION_TYPES.forEach(([type, label, icon]) => {
+    const btn = document.createElement('button');
+    btn.className = 'sheet-option' + (currentType === type ? ' active' : '');
+    btn.innerHTML = `<span class="sheet-option-icon">${icon}</span><span>${label}</span>`;
+    btn.addEventListener('click', () => {
+      const track = findTrackOfClip(clip.id);
+      const dur = Number(document.getElementById('transition-duration').value) || 0.6;
+      G.setClipTransition(track, clip.id, type, dur);
+      closeAllSheets();
+      renderTimeline();
+      seekGlobal(state.currentTime);
+      persist();
+    });
+    container.appendChild(btn);
   });
+  const durRange = document.getElementById('transition-duration');
+  durRange.value = (clip.animIn && clip.animIn.duration) || 0.6;
   openSheet('transition-sheet');
 }
 
@@ -334,13 +542,16 @@ function submitTextSheet() {
   const content = document.getElementById('text-input').value.trim();
   if (!content) { showToast('Type something first'); return; }
   const color = document.getElementById('text-color-input').value;
-  const clip = makeTextClip(content, color);
-  state.clips.push(clip);
+  const track = activeTrack();
+  const startTime = track.clips.reduce((max, c) => Math.max(max, c.startTime + clipDuration(c)), state.currentTime);
+  const clip = makeTextClip(content, color, startTime);
+  track.clips.push(clip);
   closeAllSheets();
   showEditor();
+  syncPreviewLayers();
   renderTimeline();
   selectClip(clip.id);
-  seekGlobal(clipStartTime(clip.id));
+  seekGlobal(clip.startTime);
   persist();
 }
 
@@ -349,7 +560,7 @@ function openEffectSheet(clip) {
   if (!clip) { showToast('Select a clip first'); return; }
   const container = document.getElementById('effect-options');
   container.innerHTML = '';
-  EFFECT_CHOICES.forEach(([type, label, icon]) => {
+  G.EFFECT_TYPES.forEach(([type, label, icon]) => {
     const btn = document.createElement('button');
     btn.className = 'sheet-option' + (clip.effect.type === type ? ' active' : '');
     btn.innerHTML = `<span class="sheet-option-icon">${icon}</span><span>${label}</span>`;
@@ -398,6 +609,12 @@ function fieldRow(label, inputEl) {
   row.appendChild(inputEl);
   return row;
 }
+function sectionTitle(text) {
+  const title = document.createElement('div');
+  title.className = 'props-section-title';
+  title.textContent = text;
+  return title;
+}
 function renderPropsBody() {
   const body = document.getElementById('props-body');
   body.innerHTML = '';
@@ -411,23 +628,29 @@ function renderPropsBody() {
     body.appendChild(fieldRow(`Volume (${clip.volume}dB)`, volRange));
 
     const opRange = document.createElement('input');
-    opRange.type = 'range'; opRange.min = 0; opRange.max = 1; opRange.step = 0.05; opRange.value = clip.opacity;
+    opRange.type = 'range'; opRange.min = 0; opRange.max = 1; opRange.step = 0.05; opRange.value = clip.opacity == null ? 1 : clip.opacity;
     opRange.addEventListener('input', () => { clip.opacity = Number(opRange.value); persist(); seekGlobal(state.currentTime); });
-    body.appendChild(fieldRow('Brightness', opRange));
+    body.appendChild(fieldRow('Opacity', opRange));
+
+    body.appendChild(sectionTitle('Adjust'));
+    clip.adjustments = clip.adjustments || {};
+    G.ADJUSTMENT_FIELDS.forEach(([key, label, min, max]) => {
+      const inp = document.createElement('input');
+      inp.type = 'range'; inp.min = min; inp.max = max; inp.step = 1; inp.value = clip.adjustments[key] || 0;
+      inp.addEventListener('input', () => { clip.adjustments[key] = Number(inp.value); persist(); renderTimeline(); });
+      body.appendChild(fieldRow(label, inp));
+    });
 
   } else if (propsActiveTab === 'effect') {
-    const title = document.createElement('div');
-    title.className = 'props-section-title';
-    title.textContent = 'Effect';
-    body.appendChild(title);
+    body.appendChild(sectionTitle('Effect'));
     const select = document.createElement('select');
-    EFFECT_CHOICES.forEach(([type, label]) => {
+    G.EFFECT_TYPES.forEach(([type, label]) => {
       const opt = document.createElement('option');
       opt.value = type; opt.textContent = label;
       if (clip.effect.type === type) opt.selected = true;
       select.appendChild(opt);
     });
-    select.addEventListener('change', () => { clip.effect.type = select.value; renderTimeline(); persist(); });
+    select.addEventListener('change', () => { clip.effect.type = select.value; renderTimeline(); persist(); seekGlobal(state.currentTime); });
     body.appendChild(fieldRow('Type', select));
 
     const amtRange = document.createElement('input');
@@ -436,17 +659,14 @@ function renderPropsBody() {
     body.appendChild(fieldRow('Amount', amtRange));
 
   } else if (propsActiveTab === 'mask') {
-    const title = document.createElement('div');
-    title.className = 'props-section-title';
-    title.textContent = 'Green Screen';
-    body.appendChild(title);
+    body.appendChild(sectionTitle('Green Screen'));
 
     clip.chromaKey = clip.chromaKey || { enabled: false, color: '#00ff00', density: 50, shadows: 50 };
     const ck = clip.chromaKey;
 
     const ckToggle = document.createElement('input');
     ckToggle.type = 'checkbox'; ckToggle.checked = !!ck.enabled;
-    ckToggle.addEventListener('change', () => { ck.enabled = ckToggle.checked; persist(); renderPropsBody(); });
+    ckToggle.addEventListener('change', () => { ck.enabled = ckToggle.checked; persist(); renderPropsBody(); seekGlobal(state.currentTime); });
     body.appendChild(fieldRow('Enabled', ckToggle));
 
     if (ck.enabled) {
@@ -466,19 +686,16 @@ function renderPropsBody() {
       body.appendChild(fieldRow('Shadows', shadowsInput));
     }
 
-    const maskTitle = document.createElement('div');
-    maskTitle.className = 'props-section-title';
-    maskTitle.textContent = 'Mask';
-    body.appendChild(maskTitle);
+    body.appendChild(sectionTitle('Mask'));
 
     const shapeSelect = document.createElement('select');
-    [['none', 'None'], ['rect', 'Rectangle'], ['ellipse', 'Ellipse']].forEach(([v, label]) => {
+    G.MASK_SHAPES.forEach(([v, label]) => {
       const opt = document.createElement('option');
       opt.value = v; opt.textContent = label;
       if (clip.mask.type === v) opt.selected = true;
       shapeSelect.appendChild(opt);
     });
-    shapeSelect.addEventListener('change', () => { clip.mask.type = shapeSelect.value; renderTimeline(); persist(); renderPropsBody(); });
+    shapeSelect.addEventListener('change', () => { clip.mask.type = shapeSelect.value; renderTimeline(); persist(); renderPropsBody(); seekGlobal(state.currentTime); });
     body.appendChild(fieldRow('Shape', shapeSelect));
 
     if (clip.mask.type !== 'none') {
@@ -498,6 +715,17 @@ function renderPropsBody() {
       invertCb.addEventListener('change', () => { clip.mask.invert = invertCb.checked; persist(); });
       body.appendChild(fieldRow('Invert', invertCb));
     }
+
+    body.appendChild(sectionTitle('Blend'));
+    const blendSelect = document.createElement('select');
+    G.BLEND_MODES.forEach(([v, label]) => {
+      const opt = document.createElement('option');
+      opt.value = v; opt.textContent = label;
+      if ((clip.blendMode || 'normal') === v) opt.selected = true;
+      blendSelect.appendChild(opt);
+    });
+    blendSelect.addEventListener('change', () => { clip.blendMode = blendSelect.value; persist(); renderTimeline(); seekGlobal(state.currentTime); });
+    body.appendChild(fieldRow('Blend Mode', blendSelect));
   }
 }
 
@@ -505,20 +733,20 @@ function renderPropsBody() {
 function splitSelectedAtPlayhead() {
   const clip = findClip(state.selectedClipId);
   if (!clip || clip.kind !== 'media') { showToast('Select a media clip first'); return; }
-  const localTime = clip.inPoint + (state.currentTime - clipStartTime(clip.id));
+  const track = findTrackOfClip(clip.id);
+  const localTime = clip.inPoint + (state.currentTime - clip.startTime);
   if (localTime <= clip.inPoint + 0.05 || localTime >= clip.outPoint - 0.05) {
     showToast('Move the playhead inside the clip first');
     return;
   }
   const second = Object.assign({}, clip, {
-    id: uid(), inPoint: localTime, transitionAfter: clip.transitionAfter,
+    id: uid(), inPoint: localTime, startTime: clip.startTime + (localTime - clip.inPoint),
     effect: Object.assign({}, clip.effect), mask: Object.assign({}, clip.mask),
-    chromaKey: Object.assign({}, clip.chromaKey),
+    chromaKey: Object.assign({}, clip.chromaKey), adjustments: Object.assign({}, clip.adjustments),
+    animIn: { type: 'none', duration: 0.6 },
   });
   clip.outPoint = localTime;
-  clip.transitionAfter = 'none';
-  const idx = clipIndex(clip.id);
-  state.clips.splice(idx + 1, 0, second);
+  track.clips.push(second);
   renderTimeline();
   seekGlobal(state.currentTime);
   persist();
@@ -526,77 +754,114 @@ function splitSelectedAtPlayhead() {
 
 function deleteSelected() {
   if (!state.selectedClipId) return;
-  const idx = clipIndex(state.selectedClipId);
+  const track = findTrackOfClip(state.selectedClipId);
+  if (!track) return;
+  const idx = track.clips.findIndex((c) => c.id === state.selectedClipId);
   if (idx === -1) return;
-  state.clips.splice(idx, 1);
-  state.selectedClipId = state.clips.length ? state.clips[Math.min(idx, state.clips.length - 1)].id : null;
+  track.clips.splice(idx, 1);
+  state.selectedClipId = null;
   renderTimeline();
   seekGlobal(state.currentTime);
   persist();
-  if (state.clips.length === 0) {
+  if (state.tracks.every((t) => t.clips.length === 0)) {
     document.getElementById('home-screen').classList.remove('hidden');
     document.getElementById('editor-screen').classList.add('hidden');
   }
 }
 
-// ---- playback / preview ----
-const videoEl = document.getElementById('preview-video');
-const imageEl = document.getElementById('preview-image');
-const textPreviewEl = document.getElementById('text-preview');
+// ---- preview: one layered DOM element set per track, stacked by z-order ----
+function cssBlendMode(mode) {
+  const map = {
+    normal: 'normal', screen: 'screen', multiply: 'multiply', overlay: 'overlay',
+    darken: 'darken', lighten: 'lighten', difference: 'difference', addition: 'plus-lighter',
+  };
+  return map[mode] || 'normal';
+}
 
-function clipAtGlobalTime(t) {
-  let acc = 0;
-  for (const c of state.clips) {
+function syncPreviewLayers() {
+  ensureTracks();
+  const wrap = document.getElementById('preview-layers');
+  // Rebuild layer pool to match tracks (cheap enough - only happens on
+  // track add/remove/import, not per frame).
+  wrap.innerHTML = '';
+  state._layers = {};
+  state.tracks.forEach((track) => {
+    const layer = document.createElement('div');
+    layer.className = 'preview-layer';
+    const video = document.createElement('video');
+    video.className = 'hidden'; video.playsinline = true;
+    const img = document.createElement('img');
+    img.className = 'hidden';
+    const text = document.createElement('div');
+    text.className = 'hidden preview-text';
+    layer.appendChild(video); layer.appendChild(img); layer.appendChild(text);
+    wrap.appendChild(layer);
+    state._layers[track.id] = { layer, video, img, text, activeVideoPath: null };
+  });
+}
+
+function clipAtTrackTime(track, t) {
+  let found = null;
+  for (const c of track.clips) {
     const d = clipDuration(c);
-    if (t < acc + d || c === state.clips[state.clips.length - 1]) return { clip: c, localOffset: t - acc };
-    acc += d;
+    if (t >= c.startTime && t < c.startTime + d) {
+      if (!found || c.startTime >= found.startTime) found = c;
+    }
   }
-  return null;
+  return found;
 }
 
 function applyLivePreviewAudio() {
-  const found = clipAtGlobalTime(state.currentTime);
-  if (!found || found.clip.kind !== 'media' || found.clip.type !== 'video') return;
-  const linear = Math.pow(10, (found.clip.volume || 0) / 20);
-  videoEl.volume = Math.max(0, Math.min(1, linear));
-}
-
-function showPreviewLayer(kind) {
-  videoEl.classList.toggle('hidden', kind !== 'video');
-  imageEl.classList.toggle('hidden', kind !== 'image');
-  textPreviewEl.classList.toggle('hidden', kind !== 'text');
+  for (const track of state.tracks) {
+    const L = state._layers[track.id];
+    if (!L) continue;
+    const clip = clipAtTrackTime(track, state.currentTime);
+    if (clip && clip.kind === 'media' && clip.type === 'video') {
+      const linear = Math.pow(10, (clip.volume || 0) / 20);
+      L.video.volume = Math.max(0, Math.min(1, track.muted ? 0 : linear));
+    }
+  }
 }
 
 function seekGlobal(t) {
-  state.currentTime = Math.max(0, Math.min(totalDuration(), t));
-  const found = clipAtGlobalTime(state.currentTime);
-  document.getElementById('no-clip-hint').classList.toggle('hidden', !!found);
+  ensureTracks();
+  state.currentTime = Math.max(0, Math.min(Math.max(totalDuration(), 0.01), t));
+  let anyClip = false;
 
-  if (found && found.clip.kind === 'media' && found.clip.type === 'video') {
-    const { clip, localOffset } = found;
-    const srcTime = clip.inPoint + Math.max(0, localOffset);
-    showPreviewLayer('video');
-    if (state.activeVideoPath !== clip.path) {
-      videoEl.src = toFileSrc(clip.path);
-      state.activeVideoPath = clip.path;
+  state.tracks.forEach((track) => {
+    const L = state._layers[track.id];
+    if (!L) return;
+    const clip = track.muted ? null : clipAtTrackTime(track, state.currentTime);
+    L.layer.style.mixBlendMode = clip ? cssBlendMode(clip.blendMode) : 'normal';
+    L.layer.style.opacity = clip && clip.opacity != null ? clip.opacity : 1;
+
+    if (clip) anyClip = true;
+
+    if (clip && clip.kind === 'media' && clip.type === 'video') {
+      const localOffset = state.currentTime - clip.startTime;
+      const srcTime = clip.inPoint + Math.max(0, localOffset);
+      L.video.classList.remove('hidden'); L.img.classList.add('hidden'); L.text.classList.add('hidden');
+      if (L.activeVideoPath !== clip.path) { L.video.src = toFileSrc(clip.path); L.activeVideoPath = clip.path; }
+      if (Math.abs(L.video.currentTime - srcTime) > 0.15) {
+        try { L.video.currentTime = srcTime; } catch (e) {}
+      }
+    } else if (clip && clip.kind === 'media' && clip.type === 'image') {
+      L.video.classList.add('hidden'); if (!L.video.paused) L.video.pause();
+      L.img.classList.remove('hidden'); L.text.classList.add('hidden');
+      L.img.src = toFileSrc(clip.path);
+    } else if (clip && clip.kind === 'text') {
+      L.video.classList.add('hidden'); if (!L.video.paused) L.video.pause();
+      L.img.classList.add('hidden'); L.text.classList.remove('hidden');
+      L.text.textContent = clip.text.content;
+      L.text.style.color = clip.text.color || '#ffffff';
+    } else {
+      L.video.classList.add('hidden'); if (!L.video.paused) L.video.pause();
+      L.img.classList.add('hidden'); L.text.classList.add('hidden');
     }
-    if (Math.abs(videoEl.currentTime - srcTime) > 0.15) {
-      try { videoEl.currentTime = srcTime; } catch (e) {}
-    }
-    applyLivePreviewAudio();
-  } else if (found && found.clip.kind === 'media' && found.clip.type === 'image') {
-    showPreviewLayer('image');
-    if (!videoEl.paused) videoEl.pause();
-    imageEl.src = toFileSrc(found.clip.path);
-  } else if (found && found.clip.kind === 'text') {
-    showPreviewLayer('text');
-    if (!videoEl.paused) videoEl.pause();
-    textPreviewEl.textContent = found.clip.text.content;
-    textPreviewEl.style.color = found.clip.text.color || '#ffffff';
-  } else {
-    showPreviewLayer(null);
-    if (!videoEl.paused) videoEl.pause();
-  }
+  });
+
+  document.getElementById('no-clip-hint').classList.toggle('hidden', anyClip);
+  applyLivePreviewAudio();
 
   state._programmaticScroll = true;
   document.getElementById('timeline-scroll').scrollLeft = state.currentTime * PX_PER_SEC;
@@ -606,13 +871,14 @@ function seekGlobal(t) {
 let rafId = null;
 let wallStart = 0, timeStart = 0;
 function play() {
-  if (state.isPlaying || state.clips.length === 0) return;
+  ensureTracks();
+  if (state.isPlaying || state.tracks.every((t) => t.clips.length === 0)) return;
   state.isPlaying = true;
   document.getElementById('btn-playpause').textContent = '⏸';
   document.getElementById('btn-playpause').classList.add('playing');
   wallStart = performance.now();
   timeStart = state.currentTime;
-  if (!videoEl.classList.contains('hidden')) videoEl.play().catch(() => {});
+  Object.values(state._layers).forEach((L) => { if (!L.video.classList.contains('hidden')) L.video.play().catch(() => {}); });
   const loop = () => {
     if (!state.isPlaying) return;
     const elapsed = (performance.now() - wallStart) / 1000;
@@ -630,244 +896,24 @@ function pause() {
   document.getElementById('btn-playpause').classList.remove('playing');
   if (rafId) cancelAnimationFrame(rafId);
   rafId = null;
-  videoEl.pause();
+  Object.values(state._layers || {}).forEach((L) => L.video.pause());
 }
 
-// Dragging the timeline strip scrubs the (fixed, centered) playhead - this
-// was previously a no-op listener, which is why the playhead looked frozen
-// no matter what you did with the strip beneath it.
 function wireTimelineScrub() {
   const scrollEl = document.getElementById('timeline-scroll');
   scrollEl.addEventListener('scroll', () => {
     if (state._programmaticScroll) { state._programmaticScroll = false; return; }
     if (state.isPlaying) pause();
     const t = scrollEl.scrollLeft / PX_PER_SEC;
-    state.currentTime = Math.max(0, Math.min(totalDuration(), t));
-    const found = clipAtGlobalTime(state.currentTime);
-    document.getElementById('no-clip-hint').classList.toggle('hidden', !!found);
-    if (found && found.clip.kind === 'media' && found.clip.type === 'video') {
-      const srcTime = found.clip.inPoint + Math.max(0, found.localOffset);
-      showPreviewLayer('video');
-      if (state.activeVideoPath !== found.clip.path) { videoEl.src = toFileSrc(found.clip.path); state.activeVideoPath = found.clip.path; }
-      try { videoEl.currentTime = srcTime; } catch (e) {}
-    } else if (found && found.clip.kind === 'media' && found.clip.type === 'image') {
-      showPreviewLayer('image');
-      imageEl.src = toFileSrc(found.clip.path);
-    } else if (found && found.clip.kind === 'text') {
-      showPreviewLayer('text');
-      textPreviewEl.textContent = found.clip.text.content;
-      textPreviewEl.style.color = found.clip.text.color || '#ffffff';
-    } else {
-      showPreviewLayer(null);
-    }
-    document.getElementById('time-readout').textContent = `${fmtTime(state.currentTime)} / ${fmtTime(totalDuration())}`;
+    seekGlobal(t);
   });
 }
 
 // ---- export ----
-function clampFadeDur(a, b) {
-  return Math.max(0.05, Math.min(FADE_DUR, clipDuration(a) * 0.4, clipDuration(b) * 0.4));
-}
-
-// Effects/masks apply within a single already-isolated clip segment (no
-// other layer under it in this linear-sequence model), so unlike the
-// desktop app there's no need for enable/timeline-gating here - simpler.
-function effectFilterFor(effect) {
-  const amt = effect.amount == null ? 50 : effect.amount;
-  switch (effect.type) {
-    case 'blur': return `gblur=sigma=${((amt / 100) * 12).toFixed(2)}`;
-    case 'bw': return 'eq=saturation=0';
-    case 'invert': return 'negate';
-    case 'sepia': {
-      const t = amt / 100;
-      const mix = (id, sep) => (id + (sep - id) * t).toFixed(4);
-      return `colorchannelmixer=rr=${mix(1, 0.393)}:rg=${mix(0, 0.769)}:rb=${mix(0, 0.189)}:` +
-        `gr=${mix(0, 0.349)}:gg=${mix(1, 0.686)}:gb=${mix(0, 0.168)}:` +
-        `br=${mix(0, 0.272)}:bg=${mix(0, 0.534)}:bb=${mix(1, 0.131)}`;
-    }
-    default: return null;
-  }
-}
-
-function hexToRgbInts(hex) {
-  hex = (hex || '#00ff00').replace('#', '');
-  if (hex.length === 3) hex = hex.split('').map((c) => c + c).join('');
-  const n = parseInt(hex, 16) || 0x00ff00;
-  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
-}
-
-// Green screen. Same reasoning as maskFilterFor - no layer underneath to
-// reveal, so keyed-out pixels darken to black via a per-pixel RGB-distance
-// test rather than real alpha (which would just get flattened to black by
-// the final opaque yuv420p encode anyway, so this is more predictable than
-// relying on that implicit flattening). Density widens the color range
-// that counts as "key", Shadows widens the soft blend band at its edge.
-function chromaKeyFilterFor(ck) {
-  const color = hexToRgbInts(ck.color);
-  const density = (ck.density == null ? 50 : ck.density) / 100;
-  const shadows = (ck.shadows == null ? 50 : ck.shadows) / 100;
-  const simThreshold = (density * 180).toFixed(2);
-  const blendRange = Math.max(1, shadows * 140).toFixed(2);
-  const dist = `sqrt(pow(r(X\\,Y)-${color.r}\\,2)+pow(g(X\\,Y)-${color.g}\\,2)+pow(b(X\\,Y)-${color.b}\\,2))`;
-  const factor = `min(max((${dist}-${simThreshold})/${blendRange}\\,0)\\,1)`;
-  return `geq=r='r(X\\,Y)*(${factor})':g='g(X\\,Y)*(${factor})':b='b(X\\,Y)*(${factor})'`;
-}
-
-// Mask multiplies RGB by 0/1 directly (no alpha channel involved) since
-// there's nothing underneath a clip to reveal in this single-track model -
-// "outside the mask" reads as black, which is the correct/only sensible
-// behavior here (a vignette/spotlight effect, not a compositing cutout).
-function maskFilterFor(mask) {
-  const cx = `W*${(mask.posX == null ? 0.5 : mask.posX).toFixed(4)}`;
-  const cy = `H*${(mask.posY == null ? 0.5 : mask.posY).toFixed(4)}`;
-  const rx = `W*${Math.max(0.02, mask.sizeX == null ? 0.3 : mask.sizeX).toFixed(4)}`;
-  const ry = `H*${Math.max(0.02, mask.sizeY == null ? 0.3 : mask.sizeY).toFixed(4)}`;
-  let inside;
-  if (mask.type === 'ellipse') {
-    inside = `if(lt(((X-(${cx}))*(X-(${cx})))/((${rx})*(${rx}))+((Y-(${cy}))*(Y-(${cy})))/((${ry})*(${ry}))\\,1)\\,1\\,0)`;
-  } else {
-    inside = `if(lt(abs(X-(${cx}))\\,${rx})\\,if(lt(abs(Y-(${cy}))\\,${ry})\\,1\\,0)\\,0)`;
-  }
-  const expr = mask.invert ? `(1-(${inside}))` : inside;
-  return `geq=r='r(X\\,Y)*(${expr})':g='g(X\\,Y)*(${expr})':b='b(X\\,Y)*(${expr})'`;
-}
-
-// libx264/yuv420p need even dimensions, and processing at full source
-// resolution (often 4K on a modern phone) is a plausible cause of the
-// reported export crash - very likely an out-of-memory kill, which no
-// amount of try/catch on the JS or Java side can prevent. Capping the
-// working resolution keeps memory pressure sane on mid-range hardware.
-function computeCanvasSize(clips) {
-  const firstMedia = clips.find((c) => c.kind === 'media' && c.width && c.height);
-  let W = (firstMedia && firstMedia.width) || 1080;
-  let H = (firstMedia && firstMedia.height) || 1920;
-  const MAX_DIM = 1280;
-  const largest = Math.max(W, H);
-  const scale = largest > MAX_DIM ? MAX_DIM / largest : 1;
-  W = Math.max(2, Math.round((W * scale) / 2) * 2);
-  H = Math.max(2, Math.round((H * scale) / 2) * 2);
-  return { W, H };
-}
-
-function escDrawtext(s) {
-  // Order matters: escape literal backslashes first so the escapes added
-  // below for : and , don't themselves get re-escaped. ' is swapped for a
-  // typographic quote rather than escaped, since drawtext's text='...' has
-  // no clean way to embed a literal single quote.
-  return String(s || '')
-    .replace(/\\/g, '\\\\')
-    .replace(/:/g, '\\:')
-    .replace(/,/g, '\\,')
-    .replace(/'/g, '’')
-    .replace(/\r\n|\r|\n/g, ' ');
-}
-
-function buildExportArgs(outputPath) {
-  const clips = state.clips;
-  const { W, H } = computeCanvasSize(clips);
-  const fps = state.exportSettings.framerate || 30;
-  const fontPath = state.fontPath || '/system/fonts/Roboto-Regular.ttf';
-
-  const args = ['-y'];
-  const filterParts = [];
-  const mapLabels = [];
-  let inputIdx = 0;
-
-  clips.forEach((c, i) => {
-    const dur = clipDuration(c);
-    let vLabel = `v${i}`, aLabel = `a${i}`;
-
-    if (c.kind === 'text') {
-      args.push('-f', 'lavfi', '-i', `color=c=black:s=${W}x${H}:d=${dur.toFixed(3)}:r=${fps}`);
-      const colorIdx = inputIdx++;
-      args.push('-f', 'lavfi', '-t', dur.toFixed(3), '-i', 'anullsrc=r=48000:cl=stereo');
-      const silenceIdx = inputIdx++;
-      const txt = escDrawtext(c.text.content);
-      const color = (c.text.color || '#ffffff').replace('#', '0x');
-      const fontSize = Math.round(H * 0.06);
-      // format=rgba before drawtext/geq-family filters - text/mask/chromakey
-      // negotiation is more reliable against an explicit alpha-capable
-      // format than whatever the lavfi color source happens to default to.
-      let vChain = `[${colorIdx}:v]format=rgba,drawtext=fontfile=${fontPath}:text='${txt}':` +
-        `fontcolor=${color}:fontsize=${fontSize}:x=(w-text_w)/2:y=(h-text_h)/2,format=yuv420p,setsar=1,fps=${fps}`;
-      filterParts.push(`${vChain}[${vLabel}]`);
-      filterParts.push(`[${silenceIdx}:a]anull[${aLabel}]`);
-    } else if (c.type === 'image') {
-      args.push('-loop', '1', '-framerate', String(fps), '-t', dur.toFixed(3), '-i', c.path);
-      const idx = inputIdx++;
-      args.push('-f', 'lavfi', '-t', dur.toFixed(3), '-i', 'anullsrc=r=48000:cl=stereo');
-      const silenceIdx = inputIdx++;
-      let vChain = `[${idx}:v]format=rgba,scale=${W}:${H}:force_original_aspect_ratio=decrease,` +
-        `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${fps}`;
-      const effectFilter = c.effect && effectFilterFor(c.effect);
-      if (effectFilter) vChain += ',' + effectFilter;
-      if (c.chromaKey && c.chromaKey.enabled) vChain += ',format=rgba,' + chromaKeyFilterFor(c.chromaKey);
-      if (c.mask && c.mask.type && c.mask.type !== 'none') vChain += ',format=rgba,' + maskFilterFor(c.mask);
-      if (c.opacity != null && c.opacity < 0.999) {
-        const op = Math.max(0, Math.min(1, c.opacity));
-        vChain += `,colorchannelmixer=rr=${op}:gg=${op}:bb=${op}`;
-      }
-      vChain += ',format=yuv420p';
-      filterParts.push(`${vChain}[${vLabel}]`);
-      filterParts.push(`[${silenceIdx}:a]anull[${aLabel}]`);
-    } else {
-      args.push('-i', c.path);
-      const idx = inputIdx++;
-      let vChain = `[${idx}:v]trim=start=${c.inPoint.toFixed(3)}:end=${c.outPoint.toFixed(3)},setpts=PTS-STARTPTS,` +
-        `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${fps}`;
-      let aChain = `[${idx}:a]atrim=start=${c.inPoint.toFixed(3)}:end=${c.outPoint.toFixed(3)},asetpts=PTS-STARTPTS`;
-
-      const effectFilter = c.effect && effectFilterFor(c.effect);
-      if (effectFilter) vChain += ',' + effectFilter;
-      if (c.chromaKey && c.chromaKey.enabled) vChain += ',format=rgba,' + chromaKeyFilterFor(c.chromaKey);
-      if (c.mask && c.mask.type && c.mask.type !== 'none') vChain += ',format=rgba,' + maskFilterFor(c.mask);
-      if (c.opacity != null && c.opacity < 0.999) {
-        const op = Math.max(0, Math.min(1, c.opacity));
-        vChain += `,colorchannelmixer=rr=${op}:gg=${op}:bb=${op}`;
-      }
-      vChain += ',format=yuv420p';
-      if (c.volume) aChain += `,volume=${Math.pow(10, c.volume / 20).toFixed(4)}`;
-
-      const prev = clips[i - 1];
-      const next = clips[i + 1];
-      if (prev && prev.transitionAfter === 'fade') {
-        const d = clampFadeDur(prev, c);
-        vChain += `,fade=t=in:st=0:d=${d.toFixed(3)}`;
-        aChain += `,afade=t=in:st=0:d=${d.toFixed(3)}`;
-      }
-      if (next && c.transitionAfter === 'fade') {
-        const d = clampFadeDur(c, next);
-        const st = Math.max(0, dur - d);
-        vChain += `,fade=t=out:st=${st.toFixed(3)}:d=${d.toFixed(3)}`;
-        aChain += `,afade=t=out:st=${st.toFixed(3)}:d=${d.toFixed(3)}`;
-      }
-
-      filterParts.push(`${vChain}[${vLabel}]`);
-      filterParts.push(`${aChain}[${aLabel}]`);
-    }
-    mapLabels.push(`[${vLabel}][${aLabel}]`);
-  });
-  filterParts.push(`${mapLabels.join('')}concat=n=${clips.length}:v=1:a=1[outv][outa]`);
-
-  args.push('-filter_complex', filterParts.join(';'));
-  args.push('-map', '[outv]', '-map', '[outa]');
-
-  const bitrateKbps = state.exportSettings.bitrateKbps;
-  if (bitrateKbps) {
-    args.push('-c:v', 'libx264', '-preset', 'veryfast',
-      '-b:v', `${bitrateKbps}k`, '-maxrate', `${bitrateKbps}k`, '-bufsize', `${bitrateKbps * 2}k`, '-pix_fmt', 'yuv420p');
-  } else {
-    const crf = QUALITY_CRF[state.exportSettings.quality] || QUALITY_CRF.high;
-    args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(crf), '-pix_fmt', 'yuv420p');
-  }
-  args.push('-c:a', 'aac', '-b:a', '160k');
-  args.push(outputPath);
-  return args;
-}
-
 function validateClipsForExport() {
-  if (state.clips.length === 0) return 'Add at least one clip first';
-  for (const c of state.clips) {
+  const allClips = state.tracks.flatMap((t) => t.clips);
+  if (allClips.length === 0) return 'Add at least one clip first';
+  for (const c of allClips) {
     if (c.kind === 'media') {
       if (!c.path) return 'A clip is missing its source file';
       if (!(c.outPoint > c.inPoint)) return 'A clip has an invalid trim range';
@@ -910,7 +956,7 @@ async function exportProject() {
 
     let args;
     try {
-      args = buildExportArgs(outputPath);
+      args = G.buildFilterGraph(state, outputPath).args;
     } catch (e) {
       finish('Could not build the export - ' + (e && e.message ? e.message : e));
       return;
@@ -935,8 +981,11 @@ async function exportProject() {
 
 // ---- wiring ----
 window.addEventListener('DOMContentLoaded', () => {
+  syncPreviewLayers();
   if (restore()) {
     showEditor();
+    syncPreviewLayers();
+    renderTrackControls();
     renderTimeline();
     seekGlobal(0);
   }
@@ -948,9 +997,9 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('tool-split').addEventListener('click', splitSelectedAtPlayhead);
   document.getElementById('tool-delete').addEventListener('click', deleteSelected);
   document.getElementById('tool-transition').addEventListener('click', () => {
-    const idx = clipIndex(state.selectedClipId);
-    if (idx === -1 || idx >= state.clips.length - 1) { showToast('Select a clip that has another clip after it'); return; }
-    openTransitionSheet(state.clips[idx]);
+    const clip = findClip(state.selectedClipId);
+    if (!clip) { showToast('Select a clip first'); return; }
+    openTransitionSheet(clip);
   });
   document.getElementById('tool-settings').addEventListener('click', openSettingsSheet);
   document.getElementById('tool-export').addEventListener('click', exportProject);
@@ -971,14 +1020,16 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // Transition sheet
-  document.querySelectorAll('#transition-sheet .sheet-option').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      if (transitionSheetClip) transitionSheetClip.transitionAfter = btn.dataset.type;
-      closeAllSheets();
-      renderTimeline();
-      persist();
-    });
+  // Transition sheet duration slider
+  document.getElementById('transition-duration').addEventListener('change', (e) => {
+    if (!transitionSheetClip) return;
+    const track = findTrackOfClip(transitionSheetClip.id);
+    const type = (transitionSheetClip.animIn && transitionSheetClip.animIn.type) || 'none';
+    if (type === 'none') return;
+    G.setClipTransition(track, transitionSheetClip.id, type, Number(e.target.value));
+    renderTimeline();
+    seekGlobal(state.currentTime);
+    persist();
   });
 
   // Text sheet
@@ -1003,5 +1054,6 @@ window.addEventListener('DOMContentLoaded', () => {
   });
 
   wireTimelineScrub();
+  renderTrackControls();
   renderTimeline();
 });

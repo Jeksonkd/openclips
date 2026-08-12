@@ -53,12 +53,13 @@ html, body {
   justify-content: center;
   overflow: hidden;
 }
-#preview-video, #preview-image { max-width: 100%; max-height: 100%; background: #000; }
-#no-clip-hint { position: absolute; color: var(--text-1); font-size: 14px; pointer-events: none; }
-#text-preview {
+#preview-layers { position: absolute; inset: 0; }
+.preview-layer { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+.preview-layer video, .preview-layer img { max-width: 100%; max-height: 100%; }
+#no-clip-hint { position: absolute; color: var(--text-1); font-size: 14px; pointer-events: none; z-index: 10; }
+.preview-text {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   padding: 20px; text-align: center; font-size: 22px; font-weight: 600; word-break: break-word;
-  background: #000;
 }
 
 #scrub-row { display: flex; align-items: center; gap: 10px; padding: 8px 14px; flex-shrink: 0; }
@@ -69,22 +70,45 @@ html, body {
 .play-btn.playing { color: var(--accent); border-color: var(--accent); }
 #time-readout { color: var(--text-1); font-variant-numeric: tabular-nums; font-size: 12px; }
 
+/* Track chips - tap to make a track active (new clips append onto it),
+   mute/delete per track. Shown topmost-compositing-track-first, above the
+   timeline lanes. */
+#track-controls {
+  display: flex; gap: 8px; padding: 8px 10px; overflow-x: auto; flex-shrink: 0;
+  background: var(--bg-1); border-top: 1px solid var(--line);
+}
+.track-chip {
+  display: flex; align-items: center; gap: 4px; flex-shrink: 0;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 14px;
+  padding: 5px 8px; font-size: 11px; color: var(--text-1);
+}
+.track-chip.active { border-color: var(--accent); color: var(--text-0); }
+.track-chip.muted { opacity: 0.55; }
+.track-chip-label { max-width: 70px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.track-chip-btn { background: transparent; border: none; color: inherit; font-size: 11px; padding: 0 2px; }
+.add-track-btn { color: var(--accent); border-color: var(--accent); }
+
 /* Timeline - grown from a single fixed 84px row and given more of the
-   screen than before, per feedback that there wasn't enough room here. */
+   screen than before, per feedback that there wasn't enough room here.
+   Multiple stacked track lanes, each holding absolutely-positioned clips
+   (free startTime, not a linear inline flow) so clips can overlap for
+   transitions or sit on independent tracks. */
 #timeline-scroll {
   position: relative;
   flex: 1;
   min-height: 130px;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: auto;
   background: var(--bg-1);
-  border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
   padding: 10px 50vw;
-  white-space: nowrap;
-  touch-action: pan-x;
+  touch-action: pan-x pan-y;
 }
-#timeline-track { position: relative; height: 64px; display: inline-flex; align-items: center; }
+#timeline-tracks { position: relative; }
+.tl-lane {
+  position: absolute; left: 0; height: 60px; border-radius: 8px;
+  background: var(--bg-2);
+}
+.tl-lane.active-lane { outline: 1px solid var(--accent); outline-offset: -1px; }
 #timeline-playhead {
   position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: var(--accent-2);
   z-index: 5; pointer-events: none;
@@ -95,23 +119,21 @@ html, body {
 }
 
 .tl-clip {
-  position: relative;
-  height: 64px;
+  position: absolute;
+  top: 0;
+  height: 60px;
   border-radius: 8px;
   overflow: hidden;
   background: var(--bg-3);
   border: 2px solid transparent;
-  display: inline-block;
-  vertical-align: middle;
   background-size: cover;
   background-position: center;
-  margin-right: 3px;
   touch-action: none;
 }
-.tl-clip.dragging { opacity: 0.6; z-index: 10; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+.tl-clip.dragging { opacity: 0.75; z-index: 10; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
 .tl-clip.text-clip { background: linear-gradient(135deg, #6b4f8c, #8a5fe0); display: flex; align-items: center; justify-content: center; padding: 4px; }
 .tl-clip.text-clip .tl-clip-text-preview { color: #fff; font-size: 10px; text-align: center; overflow: hidden; max-height: 100%; }
-.tl-clip.selected { border-color: var(--accent); }
+.tl-clip.selected { border-color: var(--accent); z-index: 2; }
 .tl-clip .tl-clip-name {
   position: absolute; left: 4px; bottom: 2px; font-size: 9px; color: #fff;
   text-shadow: 0 1px 2px rgba(0,0,0,.8); white-space: nowrap; max-width: 90%; overflow: hidden; text-overflow: ellipsis;
@@ -129,12 +151,18 @@ html, body {
   position: absolute; top: 2px; right: 2px; width: 14px; height: 14px; border-radius: 50%;
   background: rgba(0,0,0,.55); color: var(--accent); font-size: 9px; display: flex; align-items: center; justify-content: center;
 }
+.tl-transition-flag {
+  position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: rgba(0,0,0,.55); color: var(--accent-2); font-size: 9px; display: flex; align-items: center; justify-content: center;
+}
 
 .tl-transition-btn {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; border-radius: 50%; vertical-align: middle;
+  /* left is set inline per-clip (lane-relative, at the clip's start edge) */
+  position: absolute; top: 50%; transform: translateY(-50%);
+  display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%;
   background: var(--bg-2); border: 1px solid var(--line); color: var(--text-1);
-  font-size: 12px; margin: 0 -13px; position: relative; z-index: 3;
+  font-size: 12px; z-index: 3;
 }
 .tl-transition-btn.active { background: var(--accent); color: #04211e; border-color: var(--accent); }
 

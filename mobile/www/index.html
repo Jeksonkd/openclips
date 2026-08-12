@@ -17,9 +17,7 @@
 
   <div id="editor-screen" class="screen hidden">
     <div id="preview-wrap">
-      <video id="preview-video" playsinline></video>
-      <img id="preview-image" class="hidden" />
-      <div id="text-preview" class="hidden"></div>
+      <div id="preview-layers"></div>
       <div id="no-clip-hint">Add a clip to begin</div>
     </div>
 
@@ -28,8 +26,10 @@
       <span id="time-readout">00:00 / 00:00</span>
     </div>
 
+    <div id="track-controls"></div>
+
     <div id="timeline-scroll">
-      <div id="timeline-track"></div>
+      <div id="timeline-tracks"></div>
       <div id="timeline-playhead"></div>
     </div>
 
@@ -65,14 +65,11 @@
 
 <div id="transition-sheet" class="sheet hidden">
   <div class="sheet-handle"></div>
-  <div class="sheet-title">Transition</div>
-  <div class="sheet-options">
-    <button class="sheet-option" data-type="none">
-      <span class="sheet-option-icon">∅</span><span>None</span>
-    </button>
-    <button class="sheet-option" data-type="fade">
-      <span class="sheet-option-icon">◐</span><span>Fade</span>
-    </button>
+  <div class="sheet-title">Transition In</div>
+  <div class="sheet-options wrap" id="transition-options"></div>
+  <div class="field-row" style="margin-top:14px;">
+    <label>Duration</label>
+    <input type="range" id="transition-duration" min="0.1" max="2" step="0.1" value="0.6" />
   </div>
 </div>
 
@@ -148,6 +145,7 @@
 
 <div id="toast" class="toast hidden"></div>
 
+<script src="js/exportGraph.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>
