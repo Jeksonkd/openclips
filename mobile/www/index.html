@@ -95,7 +95,7 @@
   <div class="props-tabs" id="props-tabs">
     <button class="props-tab active" data-tab="adjust">Adjust</button>
     <button class="props-tab" data-tab="effect">Effect</button>
-    <button class="props-tab" data-tab="mask">Mask &amp; Blend</button>
+    <button class="props-tab" data-tab="mask">Compositing</button>
   </div>
   <div class="props-body" id="props-body"></div>
 </div>
@@ -106,10 +106,11 @@
   <div class="field-row">
     <label>Quality</label>
     <select id="settings-quality">
-      <option value="low">Low</option>
-      <option value="medium">Medium</option>
-      <option value="high" selected>High</option>
-      <option value="max">Maximum</option>
+      <option value="480p">480p</option>
+      <option value="720p">720p</option>
+      <option value="1080p" selected>1080p</option>
+      <option value="2k">2K</option>
+      <option value="4k">4K</option>
     </select>
   </div>
   <div class="field-row">
@@ -119,12 +120,14 @@
       <option value="25">25 fps</option>
       <option value="30" selected>30 fps</option>
       <option value="60">60 fps</option>
+      <option value="90">90 fps</option>
+      <option value="120">120 fps</option>
     </select>
   </div>
   <div class="field-row">
     <label>Bitrate</label>
     <select id="settings-bitrate">
-      <option value="auto" selected>Auto (from quality)</option>
+      <option value="auto" selected>Auto</option>
       <option value="4000">4 Mbps</option>
       <option value="8000">8 Mbps</option>
       <option value="16000">16 Mbps</option>

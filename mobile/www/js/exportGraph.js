@@ -263,10 +263,18 @@ function escDrawtext(s) {
 
 function db2lin(db) { return Math.pow(10, db / 20); }
 
-// libx264/yuv420p need even dimensions; capping the working resolution keeps
-// memory pressure sane on mid-range phones (a plausible cause of the
-// originally-reported export crash on full 4K source).
-function computeCanvasSize(tracks) {
+// "Quality" is a resolution preset (Export Settings), not a compression
+// tier - each maps to a target long-edge pixel count, scaled around the
+// source clip's own aspect ratio (so a 480p export of a 9:16 clip is
+// 480x854, not stretched to 16:9). libx264/yuv420p need even dimensions.
+// Note picking 4K deliberately reintroduces the memory pressure that a
+// lower cap here previously existed to avoid (a plausible cause of the
+// originally-reported export crash) - that's an accepted tradeoff of
+// exposing 4K as an explicit user choice rather than always capping it.
+const RESOLUTION_LONG_EDGE = { '480p': 854, '720p': 1280, '1080p': 1920, '2k': 2560, '4k': 3840 };
+const DEFAULT_CRF = 21;
+
+function computeCanvasSize(tracks, quality) {
   let firstMedia = null;
   outer: for (const t of tracks) {
     for (const c of t.clips) {
@@ -275,9 +283,9 @@ function computeCanvasSize(tracks) {
   }
   let W = (firstMedia && firstMedia.width) || 1080;
   let H = (firstMedia && firstMedia.height) || 1920;
-  const MAX_DIM = 1280;
+  const targetLong = RESOLUTION_LONG_EDGE[quality] || RESOLUTION_LONG_EDGE['1080p'];
   const largest = Math.max(W, H);
-  const scale = largest > MAX_DIM ? MAX_DIM / largest : 1;
+  const scale = targetLong / largest;
   W = Math.max(2, Math.round((W * scale) / 2) * 2);
   H = Math.max(2, Math.round((H * scale) / 2) * 2);
   return { W, H };
@@ -294,7 +302,7 @@ function buildFilterGraph(state, outputPath) {
   // Muted means "hide this layer" (video and audio both), not merely
   // "silence its audio".
   const activeTracks = (state.tracks || []).filter((t) => !t.muted);
-  const { W, H } = computeCanvasSize(activeTracks);
+  const { W, H } = computeCanvasSize(activeTracks, state.exportSettings && state.exportSettings.quality);
   const fps = (state.exportSettings && state.exportSettings.framerate) || 30;
 
   let totalDuration = 0.01;
@@ -494,9 +502,7 @@ function buildFilterGraph(state, outputPath) {
     const kbps = exportSettings.bitrateKbps;
     args.push('-c:v', 'libx264', '-preset', 'veryfast', '-b:v', `${kbps}k`, '-maxrate', `${kbps}k`, '-bufsize', `${kbps * 2}k`, '-pix_fmt', 'yuv420p');
   } else {
-    const QUALITY_CRF = { low: 30, medium: 25, high: 21, max: 17 };
-    const crf = QUALITY_CRF[exportSettings.quality] || QUALITY_CRF.high;
-    args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(crf), '-pix_fmt', 'yuv420p');
+    args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(DEFAULT_CRF), '-pix_fmt', 'yuv420p');
   }
   args.push('-c:a', 'aac', '-b:a', '160k');
   args.push('-y', outputPath);

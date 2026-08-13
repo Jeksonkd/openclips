@@ -24,7 +24,7 @@ const state = {
   activeTrackId: null,
   currentTime: 0,
   isPlaying: false,
-  exportSettings: { quality: 'high', framerate: 30, bitrateKbps: null },
+  exportSettings: { quality: '1080p', framerate: 30, bitrateKbps: null },
   fontPath: null,
 };
 

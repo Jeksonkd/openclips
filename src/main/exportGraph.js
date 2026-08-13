@@ -6,9 +6,23 @@ const { ffmpegPath } = require('./ffmpegEngine');
 
 let currentProc = null;
 
-// Export Settings modal. Lower CRF = higher quality/larger file; ignored
-// when an explicit bitrate is set instead (see buildFilterGraph).
-const QUALITY_CRF = { low: 28, medium: 23, high: 19, max: 15 };
+// Export Settings modal. "Quality" is a resolution preset, not a
+// compression tier - each maps to a target long-edge pixel count, and the
+// project's own canvas aspect ratio is preserved around it (so a 480p
+// export of a 9:16 project is 480x854, not stretched to 16:9). A fixed CRF
+// is used for compression when no explicit bitrate is set (see
+// buildFilterGraph) - resolution and compression are independent knobs.
+const RESOLUTION_LONG_EDGE = { '480p': 854, '720p': 1280, '1080p': 1920, '2k': 2560, '4k': 3840 };
+const DEFAULT_CRF = 20;
+
+function resolveExportDims(projW, projH, quality) {
+  const targetLong = RESOLUTION_LONG_EDGE[quality] || RESOLUTION_LONG_EDGE['1080p'];
+  const projLong = Math.max(projW, projH, 1);
+  const scale = targetLong / projLong;
+  const W = Math.max(2, Math.round((projW * scale) / 2) * 2);
+  const H = Math.max(2, Math.round((projH * scale) / 2) * 2);
+  return { W, H };
+}
 
 function esc(v) {
   // Escape a literal value for use inside an ffmpeg filter expression
@@ -485,9 +499,10 @@ function buildAssFile(textClips, W, H) {
 function buildFilterGraph(project, outputPath) {
   const media = project.media || {};
   const tracks = project.timeline.tracks || [];
-  const W = (project.canvas && project.canvas.width) || 1920;
-  const H = (project.canvas && project.canvas.height) || 1080;
   const exportSettings = project.exportSettings || {};
+  const projW = (project.canvas && project.canvas.width) || 1920;
+  const projH = (project.canvas && project.canvas.height) || 1080;
+  const { W, H } = resolveExportDims(projW, projH, exportSettings.quality);
   const FPS = exportSettings.framerate || (project.canvas && project.canvas.fps) || 30;
 
   let totalDuration = 0.01;
@@ -769,8 +784,7 @@ function buildFilterGraph(project, outputPath) {
     const kbps = exportSettings.bitrateKbps;
     args.push('-c:v', 'libx264', '-preset', 'veryfast', '-b:v', `${kbps}k`, '-maxrate', `${kbps}k`, '-bufsize', `${kbps * 2}k`, '-pix_fmt', 'yuv420p');
   } else {
-    const crf = QUALITY_CRF[exportSettings.quality] || QUALITY_CRF.high;
-    args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(crf), '-pix_fmt', 'yuv420p');
+    args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', String(DEFAULT_CRF), '-pix_fmt', 'yuv420p');
   }
   args.push('-c:a', 'aac', '-b:a', '192k');
   args.push('-y', outputPath);
