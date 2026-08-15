@@ -12,6 +12,13 @@ contextBridge.exposeInMainWorld('engine', {
   probeMedia: (filePath) => ipcRenderer.invoke('media:probe', filePath),
   thumbnail: (filePath, atSeconds) => ipcRenderer.invoke('media:thumbnail', filePath, atSeconds),
 
+  // Draw clips render on an arbitrary freehand path ffmpeg has no filter for
+  // - the renderer pre-renders each frame to a PNG (drawEngine.js, the same
+  // code the live preview uses) and ships the raw bytes here to be written
+  // to a temp PNG sequence, which exportGraph.js then feeds to ffmpeg as a
+  // plain image2 input, just like it already does for still images.
+  writeDrawFrames: (clipId, frameBuffers) => ipcRenderer.invoke('draw:writeFrames', clipId, frameBuffers),
+
   startExport: (project, outputPath) => ipcRenderer.invoke('export:start', project, outputPath),
   cancelExport: () => ipcRenderer.invoke('export:cancel'),
   onExportProgress: (cb) => {

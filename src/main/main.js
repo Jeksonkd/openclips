@@ -128,6 +128,19 @@ ipcMain.handle('media:thumbnail', async (evt, filePath, atSeconds) => {
   return outPath;
 });
 
+// ---------- IPC: draw clip PNG-sequence pre-render (see preload.js) ----------
+
+ipcMain.handle('draw:writeFrames', async (evt, clipId, frameBuffers) => {
+  const dir = path.join(app.getPath('temp'), 'openclips-draw-frames', String(clipId));
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
+  frameBuffers.forEach((buf, i) => {
+    const name = `frame${String(i).padStart(6, '0')}.png`;
+    fs.writeFileSync(path.join(dir, name), Buffer.from(buf));
+  });
+  return { dir, frameCount: frameBuffers.length };
+});
+
 // ---------- IPC: export ----------
 
 ipcMain.handle('export:start', async (evt, project, outputPath) => {

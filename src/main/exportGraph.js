@@ -522,12 +522,15 @@ function buildFilterGraph(project, outputPath) {
   // not per-clip) so they don't affect other clips using the same file.
   function resolveInput(mediaItem, clip) {
     const isImage = mediaItem.type === 'image';
-    const looping = !isImage && clip.outPoint > mediaItem.duration + 0.01;
-    const key = (isImage || looping) ? `${mediaItem.id}:${clip.id}` : mediaItem.id;
+    const isSequence = mediaItem.type === 'image-sequence';
+    const looping = !isImage && !isSequence && clip.outPoint > mediaItem.duration + 0.01;
+    const key = (isImage || isSequence || looping) ? `${mediaItem.id}:${clip.id}` : mediaItem.id;
     if (inputIndexByKey.has(key)) return inputIndexByKey.get(key);
     const idx = inputs.length;
     if (isImage) {
       inputs.push({ args: ['-loop', '1', '-framerate', String(FPS), '-t', clipDisplayDuration(clip).toFixed(3), '-i', mediaItem.path] });
+    } else if (isSequence) {
+      inputs.push({ args: ['-framerate', String(mediaItem.frameRate || FPS), '-start_number', '0', '-i', path.join(mediaItem.path, 'frame%06d.png')] });
     } else if (looping) {
       inputs.push({ args: ['-stream_loop', '-1', '-i', mediaItem.path] });
     } else {
@@ -535,6 +538,23 @@ function buildFilterGraph(project, outputPath) {
     }
     inputIndexByKey.set(key, idx);
     return idx;
+  }
+
+  // Synthesizes a "media item" for a draw clip's pre-rendered PNG sequence
+  // (see prerenderDrawClips in exportPanel.js) so it can flow through the
+  // exact same per-clip filter chain (adjustments/chromakey/mask/opacity/
+  // blend) that a real media clip already uses below, instead of duplicating
+  // that ~80 lines of filter-building logic for a second clip kind. Sized at
+  // the PROJECT's edit canvas (not the resolved export W/H) since that's the
+  // pixel space the strokes were recorded and rendered in - scale=1 then
+  // reproduces them at their native size, same as any other media clip.
+  function drawClipMedia(clip, projectW, projectH, fps) {
+    if (!clip.draw || !clip.draw.framesDir || !clip.draw.frameCount) return null;
+    return {
+      id: `draw:${clip.id}`, type: 'image-sequence', path: clip.draw.framesDir,
+      width: projectW, height: projectH, hasAudio: false, hasVideo: true,
+      frameRate: clip.draw.frameRate || fps,
+    };
   }
 
   const filterLines = [];
@@ -594,8 +614,13 @@ function buildFilterGraph(project, outputPath) {
         continue;
       }
 
-      // clip.kind === 'media': contributes video and/or audio, whichever the file has.
-      const m = media[clip.mediaId];
+      // clip.kind === 'media' (or 'draw', synthesized as an image-sequence
+      // "media item" below - ffmpeg has no filter that can stroke an
+      // arbitrary freehand path, so the renderer pre-rendered it to a PNG
+      // sequence before export started; see prerenderDrawClips in
+      // exportPanel.js) - contributes video and/or audio, whichever it has.
+      if (clip.kind !== 'media' && clip.kind !== 'draw') continue;
+      const m = clip.kind === 'draw' ? drawClipMedia(clip, projW, projH, FPS) : media[clip.mediaId];
       if (!m || track.muted) continue;
 
       if (m.hasAudio) {
@@ -604,7 +629,7 @@ function buildFilterGraph(project, outputPath) {
         if (label) audioLabels.push(label);
       }
 
-      const isImage = m.type === 'image';
+      const isImage = m.type === 'image' || m.type === 'image-sequence';
       if (!m.hasVideo && !isImage) continue;
 
       const idx = resolveInput(m, clip);
@@ -735,16 +760,44 @@ function buildFilterGraph(project, outputPath) {
         filterLines.push(`[${composite}][${vlabel}]overlay=x='${x}':y='${y}':enable='${enable}':eval=frame[${next}]`);
       } else {
         // Static-geometry blend modes: localize the blend to the clip's own
-        // footprint so non-"normal" modes don't darken/lighten the whole frame.
+        // footprint so non-"normal" modes don't darken/lighten the whole
+        // frame. Two separate gotchas here, both confirmed empirically
+        // against this exact ffmpeg-static build:
+        // 1. `blend` computes its merge formula at every pixel regardless of
+        //    the top layer's alpha (unlike `overlay`, which IS alpha-aware)
+        //    - a masked/chroma-keyed clip's transparent pixels would
+        //    otherwise darken the crop region toward black instead of
+        //    leaving it untouched. Fixed by blending as if fully opaque,
+        //    then re-attaching the real alpha and letting `overlay` do the
+        //    actual per-pixel mix against the untouched composite.
+        // 2. `blend` operates on whatever pixel format its inputs actually
+        //    carry (effectively YUV here) rather than negotiating RGB itself
+        //    the way most filters do - screen-blending pure red with pure
+        //    black came out magenta instead of unchanged red until both
+        //    inputs are forced to format=rgba immediately beforehand. Worse,
+        //    `blend` and `alphamerge` also don't reliably TAG their own
+        //    OUTPUT as rgba either (confirmed empirically: feeding either
+        //    straight into `overlay` reintroduced the same color corruption
+        //    even at full opacity, where alpha can't be the cause) - each
+        //    needs its output explicitly reformatted too.
+        // Also: `composite` and `vlabel` each now feed two filters below,
+        // and ffmpeg only allows a named pad to be consumed once, hence the
+        // explicit `split`s.
         const w = Math.round((m.width || W) * (clip.transform.scale || 1));
         const h = Math.round((m.height || H) * (clip.transform.scale || 1));
         const cx = Math.round((W - w) / 2 + (clip.transform.positionX || 0));
         const cy = Math.round((H - h) / 2 + (clip.transform.positionY || 0));
         const cropLabel = `crop${vLabelCounter}`;
-        const blendLabel = `blend${vLabelCounter}`;
-        filterLines.push(`[${composite}]crop=${w}:${h}:${cx}:${cy}[${cropLabel}]`);
-        filterLines.push(`[${cropLabel}][${vlabel}]blend=all_mode=${ffmpegBlendMode(blend)}:enable='${enable}'[${blendLabel}]`);
-        filterLines.push(`[${composite}][${blendLabel}]overlay=x=${cx}:y=${cy}:enable='${enable}'[${next}]`);
+        const compA = `compa${vLabelCounter}`, compB = `compb${vLabelCounter}`;
+        const rgbLabel = `blendrgb${vLabelCounter}`, alphaLabel = `blenda${vLabelCounter}`, mergedLabel = `blendm${vLabelCounter}`;
+        filterLines.push(`[${composite}]split=2[${compA}][${compB}]`);
+        filterLines.push(`[${compA}]crop=${w}:${h}:${cx}:${cy},format=rgba[${cropLabel}]`);
+        filterLines.push(`[${vlabel}]split=2[${rgbLabel}src][${alphaLabel}src]`);
+        filterLines.push(`[${rgbLabel}src]format=rgba[${rgbLabel}]`);
+        filterLines.push(`[${alphaLabel}src]format=rgba,alphaextract[${alphaLabel}]`);
+        filterLines.push(`[${cropLabel}][${rgbLabel}]blend=all_mode=${ffmpegBlendMode(blend)}:enable='${enable}',format=rgba[${mergedLabel}]`);
+        filterLines.push(`[${mergedLabel}][${alphaLabel}]alphamerge,format=rgba[${mergedLabel}a]`);
+        filterLines.push(`[${compB}][${mergedLabel}a]overlay=x=${cx}:y=${cy}:enable='${enable}'[${next}]`);
       }
       composite = next;
     }

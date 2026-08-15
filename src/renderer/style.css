@@ -14,6 +14,7 @@
   --track-overlay: #6b5a33;
   --track-text: #b06a3a;
   --track-effect: #3a7d6b;
+  --track-draw: #a03a5a;
   --danger: #e05b5b;
 }
 
@@ -130,6 +131,12 @@ button.toggled { background: var(--accent-dim); border-color: var(--accent); }
   position: relative;
 }
 #preview-canvas { max-width: 100%; max-height: 100%; background: #000; box-shadow: 0 0 0 1px var(--line); }
+#preview-canvas.draw-mode { cursor: crosshair; }
+
+.hidden { display: none !important; }
+.draw-mini-toolbar { display: inline-flex; align-items: center; gap: 6px; }
+.draw-mini-toolbar input[type="color"] { width: 28px; height: 24px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: none; }
+.draw-mini-toolbar input[type="range"] { width: 70px; }
 
 .xform-box {
   position: absolute;
@@ -281,6 +288,7 @@ button.toggled { background: var(--accent-dim); border-color: var(--accent); }
 .clip.adjustment { background: var(--track-adjust); }
 .clip.text { background: var(--track-text); }
 .clip.effect { background: var(--track-effect); }
+.clip.draw { background: var(--track-draw); }
 .clip.animated { transition: left .15s ease, width .15s ease, box-shadow .15s ease; }
 .clip.dragging { transition: none; cursor: grabbing; }
 .clip.resizing { box-shadow: 0 0 0 2px var(--accent), 0 2px 10px rgba(91,140,255,.55); z-index: 5; }

@@ -88,12 +88,14 @@ function clipPixelClass(clip, media) {
   if (clip.kind === 'text') return 'text';
   if (clip.kind === 'adjustment') return 'adjustment';
   if (clip.kind === 'effect') return 'effect';
+  if (clip.kind === 'draw') return 'draw';
   return media && media.type === 'audio' ? 'audio' : 'video';
 }
 
 function clipLabel(clip, media) {
   if (clip.kind === 'text') return `Text: ${(clip.text && clip.text.content) || ''}`.slice(0, 40);
   if (clip.kind === 'adjustment') return 'Adjustment Layer';
+  if (clip.kind === 'draw') return `Drawing (${(clip.draw && clip.draw.strokes.length) || 0} strokes)`;
   if (clip.kind === 'effect') {
     const name = EFFECT_LABELS[(clip.effect && clip.effect.type) || 'blur'];
     const n = (clip.effectTargets && clip.effectTargets.length) || 0;
@@ -741,3 +743,4 @@ window.setupTimeline = setupTimeline;
 window.renderTimeline = renderTimeline;
 window.selectClip = selectClip;
 window.fmtTime = fmtTime;
+window.targetTrackForNewClip = targetTrackForNewClip;

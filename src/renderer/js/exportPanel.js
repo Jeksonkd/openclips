@@ -1,3 +1,44 @@
+// ffmpeg has no filter that can stroke an arbitrary freehand path, so a draw
+// clip's frames are pre-rendered here (reusing the exact same drawEngine.js
+// code the live preview uses, so export matches what was seen while editing)
+// and shipped to the main process as a PNG sequence before the real ffmpeg
+// export starts - see preload.js/main.js's draw:writeFrames and
+// exportGraph.js's image-sequence input branch.
+async function prerenderDrawClips(onStatus) {
+  const drawClips = [];
+  for (const track of project.timeline.tracks) {
+    for (const clip of track.clips) {
+      if (clip.kind === 'draw' && clip.draw && clip.draw.strokes.length > 0) drawClips.push(clip);
+    }
+  }
+  if (drawClips.length === 0) return;
+
+  const fps = project.exportSettings.framerate || 30;
+  const w = project.canvas.width, h = project.canvas.height;
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+
+  for (let ci = 0; ci < drawClips.length; ci++) {
+    const clip = drawClips[ci];
+    if (onStatus) onStatus(`Rendering drawing ${ci + 1}/${drawClips.length}…`);
+    const dur = project.clipDisplayDuration(clip);
+    const frameCount = Math.max(1, Math.ceil(dur * fps));
+    const buffers = [];
+    for (let i = 0; i < frameCount; i++) {
+      const localTime = i / fps;
+      const reveal = KF.sample(clip, 'reveal', localTime, clip.draw.reveal == null ? 1 : clip.draw.reveal);
+      DrawEngine.renderStrokesToCanvas(ctx, clip.draw.strokes, reveal, w, h);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+      buffers.push(new Uint8Array(await blob.arrayBuffer()));
+    }
+    const res = await window.engine.writeDrawFrames(clip.id, buffers);
+    clip.draw.framesDir = res.dir;
+    clip.draw.frameCount = res.frameCount;
+    clip.draw.frameRate = fps;
+  }
+}
+
 function setupExportPanel() {
   const modal = document.getElementById('export-modal');
   const settingsModal = document.getElementById('export-settings-modal');
@@ -39,6 +80,7 @@ function setupExportPanel() {
     });
 
     try {
+      await prerenderDrawClips((msg) => { status.textContent = msg; });
       await window.engine.startExport(project.toJSON(), outputPath);
       status.textContent = `Done — saved to ${outputPath}`;
       fill.style.width = '100%';

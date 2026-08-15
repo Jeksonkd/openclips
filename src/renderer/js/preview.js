@@ -639,6 +639,32 @@ class PreviewEngine {
         continue;
       }
 
+      if (clip.kind === 'draw') {
+        // Strokes are recorded in project.canvas pixel space, so the "source"
+        // is exactly that size - at the default transform (position 0,0,
+        // scale 1) the drawing lines up 1:1 with where the user actually drew.
+        this.drawScratch = this.drawScratch || document.createElement('canvas');
+        this.drawScratch.width = w;
+        this.drawScratch.height = h;
+        const dctx = this.drawScratch.getContext('2d');
+        const reveal = KF.sample(clip, 'reveal', localTime, clip.draw && clip.draw.reveal != null ? clip.draw.reveal : 1);
+        DrawEngine.renderStrokesToCanvas(dctx, clip.draw && clip.draw.strokes, reveal, w, h);
+
+        let pipelineCanvas = this.drawScratch;
+        pipelineCanvas = applyChromaKey(pipelineCanvas, clip.chromaKey, w, h);
+        pipelineCanvas = applyStaticMask(pipelineCanvas, sampledMaskFor(clip, localTime), w, h);
+
+        const state = this.transformStateFor(clip, localTime, w, h);
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, Math.min(1, state.opacity));
+        ctx.globalCompositeOperation = BLEND_MAP[clip.transform.blendMode] || 'source-over';
+        ctx.translate(w / 2 + state.posX, h / 2 + state.posY);
+        ctx.rotate((state.rotation || 0) * Math.PI / 180);
+        ctx.drawImage(pipelineCanvas, -state.drawW / 2, -state.drawH / 2, state.drawW, state.drawH);
+        ctx.restore();
+        continue;
+      }
+
       const media = project.media[clip.mediaId];
       if (!media) continue;
 

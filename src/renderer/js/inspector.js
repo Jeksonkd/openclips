@@ -123,9 +123,10 @@ function buildBlendMaskPane(container, clip) {
   note.textContent = 'Non-"Normal" blend modes combined with keyframed position/scale fall back to Normal on export.';
   container.appendChild(note);
 
-  // Masks (rect/ellipse crop) only apply to media clips - text/adjustment/
-  // effect clips don't go through the per-pixel geq mask path in export.
-  if (clip.kind !== 'media') return;
+  // Masks (rect/ellipse crop) apply to media and draw clips - text/
+  // adjustment/effect clips don't go through the per-pixel geq mask path in
+  // export.
+  if (clip.kind !== 'media' && clip.kind !== 'draw') return;
 
   clip.chromaKey = clip.chromaKey || { enabled: false, color: '#00ff00', density: 50, shadows: 50 };
   const ck = clip.chromaKey;
@@ -489,6 +490,41 @@ function buildEffectPane(container, clip) {
   renderTargets();
 }
 
+function buildDrawPane(container, clip) {
+  clip.draw = clip.draw || { strokes: [], reveal: 1, defaultColor: '#ff3b3b', defaultWidth: 8 };
+
+  sectionTitle(container, 'Reveal');
+  makeField(container, {
+    label: 'Drawn In', min: 0, max: 1, step: 0.01, digits: 2, animatable: true, property: 'reveal', clip,
+    getStatic: () => (clip.draw.reveal == null ? 1 : clip.draw.reveal), setStatic: (v) => { clip.draw.reveal = v; },
+  });
+  const note = document.createElement('div');
+  note.className = 'section-title';
+  note.style.textTransform = 'none';
+  note.style.opacity = '0.7';
+  note.textContent = 'Keyframe this at 0 then 1 across a time range to make the drawing appear stroke-by-stroke, in the order you drew it.';
+  container.appendChild(note);
+
+  sectionTitle(container, 'Strokes');
+  const info = document.createElement('div');
+  info.className = 'section-title';
+  info.style.textTransform = 'none';
+  info.style.opacity = '0.7';
+  info.textContent = `${clip.draw.strokes.length} stroke${clip.draw.strokes.length === 1 ? '' : 's'}. Use the ✏ Draw tool on the timeline toolbar to add more while this clip is selected.`;
+  container.appendChild(info);
+
+  const clearBtn = document.createElement('button');
+  clearBtn.textContent = 'Clear Drawing';
+  clearBtn.addEventListener('click', () => {
+    if (clip.draw.strokes.length && !confirm('Clear all strokes on this drawing?')) return;
+    clip.draw.strokes = [];
+    renderTimeline();
+    renderInspector();
+    rerenderPreviewNow();
+  });
+  container.appendChild(clearBtn);
+}
+
 function buildSpeedPane(container, clip) {
   sectionTitle(container, 'Playback Speed');
   makeField(container, { label: 'Multiplier', min: 0.1, max: 20, step: 0.05, digits: 2, animatable: false, property: 'speed', clip, getStatic: () => clip.speed.multiplier, setStatic: (v) => { clip.speed.multiplier = v; project.emit('tracks:changed'); } });
@@ -706,6 +742,7 @@ function tabsForClip(clip) {
   if (clip.kind === 'text') return ['transform', 'animate', 'blend', 'text'];
   if (clip.kind === 'adjustment') return ['adjust', 'advanced'];
   if (clip.kind === 'effect') return ['effect'];
+  if (clip.kind === 'draw') return ['draw', 'transform', 'blend', 'adjust'];
   const media = project.media[clip.mediaId];
   if (media && media.type === 'audio') return ['audio'];
   const tabs = ['transform', 'blend', 'speed', 'adjust', 'advanced'];
@@ -748,6 +785,7 @@ function renderInspector() {
   else if (activeTab === 'effect') buildEffectPane(pane, clip);
   else if (activeTab === 'blend') buildBlendMaskPane(pane, clip);
   else if (activeTab === 'text') buildTextPane(pane, clip);
+  else if (activeTab === 'draw') buildDrawPane(pane, clip);
   else if (activeTab === 'speed') buildSpeedPane(pane, clip);
   else if (activeTab === 'audio') buildAudioPane(pane, clip);
   else if (activeTab === 'adjust') buildAdjustPane(pane, clip);

@@ -6,6 +6,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   setupAssetPanel();
   setupTimeline();
+  setupDrawTool();
   setupInspector();
   setupExportPanel();
 

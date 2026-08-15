@@ -440,15 +440,26 @@ function buildFilterGraph(state, outputPath) {
         const x = offXExpr ? `(${offXExpr})` : '0';
         filterLines.push(`[${composite}][${vlabel}]overlay=x='${x}':y=0:enable='${enable}':eval=frame[${next}]`);
       } else {
-        // ffmpeg's `blend` filter computes the merge formula (multiply,
-        // screen, ...) at every pixel regardless of the top layer's alpha -
-        // it is NOT alpha-aware like `overlay` is. Applied directly, a
-        // masked/chroma-keyed/letterboxed clip's transparent pixels (RGB
-        // 0,0,0 under the hood) would multiply the layer below down to
-        // black instead of leaving it untouched. Fix: compute the blended
-        // result as if the clip were fully opaque, then re-attach the
-        // clip's real alpha and let `overlay` (which IS alpha-aware) do the
-        // actual per-pixel mix against the untouched composite.
+        // Two separate gotchas here, both confirmed empirically against this
+        // exact ffmpeg-static build:
+        // 1. `blend` computes its merge formula at every pixel regardless of
+        //    the top layer's alpha - it is NOT alpha-aware like `overlay`
+        //    is. Applied directly, a masked/chroma-keyed/letterboxed clip's
+        //    transparent pixels would darken the layer below toward black
+        //    instead of leaving it untouched. Fixed by blending as if the
+        //    clip were fully opaque, then re-attaching its real alpha and
+        //    letting `overlay` (which IS alpha-aware) do the actual
+        //    per-pixel mix against the untouched composite.
+        // 2. `blend` operates on whatever pixel format its inputs actually
+        //    carry (effectively YUV here) rather than negotiating RGB
+        //    itself - screen-blending pure red with pure black came out
+        //    magenta instead of unchanged red until both inputs are forced
+        //    to format=rgba immediately beforehand. Worse, `blend` and
+        //    `alphamerge` also don't reliably TAG their own OUTPUT as rgba
+        //    either (confirmed empirically: feeding either straight into
+        //    `overlay` reintroduced the same corruption even at full
+        //    opacity, where alpha can't be the cause) - each needs its
+        //    output explicitly reformatted too.
         const rgbLabel = `blendrgb${vCounter}`;
         const alphaLabel = `blenda${vCounter}`;
         const mergedLabel = `blendm${vCounter}`;
@@ -456,11 +467,13 @@ function buildFilterGraph(state, outputPath) {
         // `composite` is about to feed both the blend step and the final
         // overlay - a named pad can only be consumed once in ffmpeg's
         // filtergraph syntax, so it has to be split explicitly first.
-        filterLines.push(`[${composite}]split=2[${compA}][${compB}]`);
-        filterLines.push(`[${vlabel}]split=2[${rgbLabel}][${alphaLabel}src]`);
+        filterLines.push(`[${composite}]split=2[${compA}src][${compB}]`);
+        filterLines.push(`[${compA}src]format=rgba[${compA}]`);
+        filterLines.push(`[${vlabel}]split=2[${rgbLabel}src][${alphaLabel}src]`);
+        filterLines.push(`[${rgbLabel}src]format=rgba[${rgbLabel}]`);
         filterLines.push(`[${alphaLabel}src]format=rgba,alphaextract[${alphaLabel}]`);
-        filterLines.push(`[${compA}][${rgbLabel}]blend=all_mode=${ffmpegBlendMode(blend)}[${mergedLabel}]`);
-        filterLines.push(`[${mergedLabel}][${alphaLabel}]alphamerge[${mergedLabel}a]`);
+        filterLines.push(`[${compA}][${rgbLabel}]blend=all_mode=${ffmpegBlendMode(blend)},format=rgba[${mergedLabel}]`);
+        filterLines.push(`[${mergedLabel}][${alphaLabel}]alphamerge,format=rgba[${mergedLabel}a]`);
         filterLines.push(`[${compB}][${mergedLabel}a]overlay=x=0:y=0:enable='${enable}'[${next}]`);
       }
       composite = next;

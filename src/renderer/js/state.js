@@ -144,6 +144,25 @@ class ProjectState {
     return clip;
   }
 
+  // Freehand drawing clip. Strokes are recorded in the SAME pixel space as
+  // project.canvas (matching what the user sees while drawing 1:1, before
+  // any transform is applied) - `reveal` is a plain keyframeable property
+  // (0..1, how much of the total stroke length is drawn in) that reuses the
+  // generic KF engine exactly like opacity/scale/position already do, so
+  // "draw the line over time" needs no new keyframe machinery.
+  addDrawClip(trackId, startTime, duration) {
+    const track = this.findTrack(trackId);
+    if (!track) return null;
+    const clip = makeClip(null, {
+      kind: 'draw', startTime, inPoint: 0, outPoint: duration || 4,
+      draw: { strokes: [], reveal: 1, defaultColor: '#ff3b3b', defaultWidth: 8 },
+    });
+    track.clips.push(clip);
+    track.clips.sort((a, b) => a.startTime - b.startTime);
+    this.emit('tracks:changed');
+    return clip;
+  }
+
   addClipToTrack(trackId, mediaId, startTime) {
     const track = this.findTrack(trackId);
     const media = this.media[mediaId];
